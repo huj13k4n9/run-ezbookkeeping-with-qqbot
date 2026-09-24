@@ -18,6 +18,30 @@ fi
 # 也建一下 cwd 里的占位，避免 pi 找不到工作目录
 [ -d /app/agent ] || mkdir -p /app/agent
 
+# 绑定挂载**单个文件**时，如果宿主机上那个文件不存在，Docker 会自作主张
+# 建一个**同名目录**挂进来。pi 去 JSON.parse 一个目录就会失败，
+# 表现为「自定义模型不生效」「Langfuse 没 trace」——很难查。这里直接报出来。
+for f in "$AGENT_DIR/models.json" "$AGENT_DIR/langfuse.json"; do
+    if [ -d "$f" ]; then
+        printf '
+[entrypoint] ===== 配置错误 =====
+'
+        printf '[entrypoint] %s 是个目录，不是文件。
+' "$f"
+        printf '[entrypoint] 原因：宿主机上缺这个文件，Docker 自动建了目录。
+'
+        printf '[entrypoint] 修复：
+'
+        printf '  rm -rf pi-config/%s
+' "$(basename "$f")"
+        printf '  cp pi-config/%s.example pi-config/%s
+' "$(basename "$f")" "$(basename "$f")"
+        printf '[entrypoint] =====================
+
+'
+    fi
+done
+
 if [ -n "${PI_EXTENSIONS:-}" ]; then
     for src in $PI_EXTENSIONS; do
         # 镜像构建时已经预装过，这里先问一下 pi list，能省掉一次网络往返。

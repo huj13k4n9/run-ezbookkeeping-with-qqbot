@@ -1,5 +1,5 @@
 {
-  "_comment": "复制成 models.json 后改成你自己的端点。它会被 Dockerfile COPY 进镜像的 /app/pi-config/models.json，改完要重新 build。",
+  "_comment": "用法：sh scripts/init_config.sh 会生成一个空配置，或者 cp 本文件成 models.json 再改。它按文件挂载到 /app/pi-config/models.json，改完 docker compose restart qqbot 即可。",
   "_docs": "https://pi.dev/docs 的 models.md「Configure a compatible endpoint」",
 
   "providers": {

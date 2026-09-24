@@ -46,8 +46,8 @@ services:
       QQ_BOT_EBKTOOLS_PATH: /app/.agents/skills/ezbookkeeping/scripts/ebktools.sh
       QQ_BOT_AUTO_DOWNLOAD_DIR: /app/data/media
 
-      # pi 的配置目录。**烤在镜像里**（见 Dockerfile 的 COPY pi-config/），
-      # 改完 pi-config/ 下的文件要重新 build 才生效。
+      # pi 的配置目录。目录本身在镜像里（含构建期预装的扩展声明），
+      # 只有 models.json / langfuse.json 两个文件从宿主机挂进来。
       PI_CODING_AGENT_DIR: /app/pi-config
       # 会话是运行期数据，放 data/ 里
       PI_CODING_AGENT_SESSION_DIR: /app/data/pi-sessions
@@ -60,6 +60,18 @@ services:
       # 注意：绑定挂载时宿主机目录的属主说了算。容器内跑的是 uid 10001，
       # 所以首次要先执行：mkdir -p data && sudo chown -R 10001:10001 data
       - ./data:/app/data
+
+      # pi 的两个配置文件。逐文件挂载而不是挂整个目录，好处：
+      #   * langfuse.json 里的密钥不会留在镜像层
+      #   * 改完只需 docker compose restart（不用 rebuild）
+      #   * settings.json / auth.json / 扩展包留在容器与镜像里，不污染仓库
+      #
+      # ⚠️ 宿主机上这两个文件**必须先存在**。否则 Docker 会建一个同名目录
+      #    挂进来，pi 解析 JSON 会失败（入口脚本会检测并报错）。
+      #       cp pi-config/models.json.example   pi-config/models.json
+      #       cp pi-config/langfuse.json.example pi-config/langfuse.json
+      - ./pi-config/models.json:/app/pi-config/models.json:ro
+      - ./pi-config/langfuse.json:/app/pi-config/langfuse.json:ro
 
       # 约束文件 / 官方工具脚本 / skill：只读挂载，改完不用重建镜像。
       # 这些目录不在本仓库下时，在 .env 里设 AGENT_DIR / AGENTS_SKILLS_DIR。

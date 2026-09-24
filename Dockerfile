@@ -50,13 +50,9 @@ COPY scripts/ ./scripts/
 COPY tests/ ./tests/
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# pi 的配置直接烤进镜像（不挂卷）：
-#   models.json    自定义 LLM 端点
-#   langfuse.json  Langfuse 凭证
-# 改完要重新 build 才生效。
-# 注意：pi install 写的 settings.json 也落在 pi-config/ 里，
-# 但那是在运行时（构建时预装的会进镜像），容器重建后会重装。
-COPY pi-config/ ./pi-config/
+# pi 的配置目录。里面只有扩展声明（settings.json）和预装的扩展包；
+# 真正的配置 models.json / langfuse.json 由 compose **逐文件**挂进来，
+# 所以密钥不会留在镜像层，而且改完重启容器即可，不用重建。
 
 # 非 root 运行。
 #
