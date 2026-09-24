@@ -1,14 +1,4 @@
 # qqbot + pi agent 单容器镜像
-#
-# 为什么基础镜像选 Debian bookworm-slim 而不是 Alpine：
-#   1. pi 官方容器化文档（docs/containerization.md）用的就是 node:24-bookworm-slim
-#   2. pi 依赖 ripgrep，且 Alpine 的 musl 对 Node 生态有兼容风险
-#   3. Debian 的 python3 / jq / tzdata 都是一条 apt 命令的事
-#
-# 为什么 bot 和 agent 放在同一个容器：
-#   qqbot 用 subprocess 直接拉起 pi，两者共享 agent 与 data/media。
-#   拆开需要引入 IPC（docker.sock 或 rpc server），收益却很小 —— agent 需要的
-#   EBKTOOL_TOKEN 本来就和 bot 在同一个信任域里。
 FROM node:24-bookworm-slim
 
 # pi 的版本固定住，避免某天 latest 变动把线上搞挂
