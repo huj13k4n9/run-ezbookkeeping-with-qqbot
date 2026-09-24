@@ -1,0 +1,93 @@
+# QQ 记账机器人（qqbot + pi agent 单容器）
+#
+#   cp .env.example .env      # 填 QQ_BOT_*、EBKTOOL_*、模型 key
+#   mkdir -p data && sudo chown -R 10001:10001 data   # 见下方 data 卷的说明
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# 想从宿主机先手动验证 agent：
+#   docker compose run --rm --entrypoint pi qqbot --print --tools bash,read -- "记 30 午饭"
+
+name: qq-bookkeeping
+
+services:
+  qqbot:
+    build:
+      context: .
+      args:
+        PI_VERSION: ${PI_VERSION:-0.87.1}
+    image: qq-bookkeeping:${PI_VERSION:-0.87.1}
+    container_name: qq-bookkeeping
+    restart: unless-stopped
+
+    # pi 会 fork bash，init 负责收尸，避免僵尸进程堆积
+    init: true
+
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+
+      # ebktools.sh 启动时会自检这两个变量，缺一个就直接报错退出
+      EBKTOOL_SERVER_BASEURL: ${EBKTOOL_SERVER_BASEURL:?请在 .env 里设置 EBKTOOL_SERVER_BASEURL}
+      EBKTOOL_TOKEN: ${EBKTOOL_TOKEN:?请在 .env 里设置 EBKTOOL_TOKEN}
+
+      # 容器内的绝对路径：与宿主机上这两个目录放在哪儿无关
+      QQ_BOT_AGENT_CWD: /app/agent
+      QQ_BOT_EBKTOOLS_PATH: /app/.agents/skills/ezbookkeeping/scripts/ebktools.sh
+
+      # 模型凭证：按你实际用的 provider 保留一个（pi 直接读这些环境变量）
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+
+    volumes:
+      # 图片落盘 + 引用索引。**必须持久化** —— 引用回查依赖已落盘的图片文件。
+      # 注意：绑定挂载时宿主机目录的属主说了算。容器内跑的是 uid 10001，
+      # 所以首次要先执行：mkdir -p data && sudo chown -R 10001:10001 data
+      # （也可以用 named volume 代替，但那样不方便从宿主机直接看图片）
+      - ./data:/app/data
+
+      # pi 的会话与凭证：持久化后重启不会丢会话（按天轮换，丢了只是当天追问断掉）
+      - pi-home:/home/qqbot/.pi
+
+      # 约束文件与官方工具脚本：从宿主机挂，改完不用重建镜像。
+      # 两个目录不在本仓库下时，在 .env 里设 AGENT_DIR / AGENTS_SKILLS_DIR。
+      - ${AGENT_DIR:-./agent}:/app/agent:ro
+      - ${AGENTS_SKILLS_DIR:-./.agents}:/app/.agents:ro
+
+    # ezBookkeeping 跑在宿主机上时，把 EBKTOOL_SERVER_BASEURL 写成
+    # http://host.docker.internal:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # agent 最长会跑 QQ_BOT_AGENT_TIMEOUT（默认 120s），给足退出时间
+    stop_grace_period: 130s
+
+    security_opt:
+      - no-new-privileges:true
+
+    cpus: 1.5
+    mem_limit: 1g
+    # node + ripgrep + bash 子进程会占一些 pid，给宽一点避免 fork 失败
+    pids_limit: 512
+
+    # 只读根文件系统 —— 更强的隔离。没在真实环境实测过，
+    # 若启动报 "Read-only file system"，把这三项一起注释掉即可。
+    #read_only: true
+    #tmpfs:
+    #  - /tmp:size=64m
+    #  - /home/qqbot/.cache:size=64m
+    #  - /home/qqbot/.npm:size=16m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pi-home:
+    name: qq-bookkeeping-pi-home

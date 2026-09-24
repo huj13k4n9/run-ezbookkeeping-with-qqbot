@@ -1,0 +1,24 @@
+# 统一换行符策略。
+#
+# 为什么必须有这个文件：.agents/skills/.../ebktools.sh 是**绑定挂载**进
+# Linux 容器的，如果 Git 把它检出成 CRLF，sh 执行时每行都会带 \r 而失败
+# （`curl\r: not found` 之类）。仓库内一律存 LF，工作区也检出 LF。
+* text=auto eol=lf
+
+# 明确一点：shell 脚本必须 LF
+*.sh    text eol=lf
+*.bash  text eol=lf
+
+# Windows 专用脚本保持 CRLF
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# 二进制不要做任何转换
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.webp binary
+*.zip binary
+*.gz binary
