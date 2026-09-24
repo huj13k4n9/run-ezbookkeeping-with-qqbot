@@ -5,3 +5,7 @@ tmp_docs/
 .venv/
 venv/
 data/
+
+# pi 的配置目录：只保留模板，其余是运行时生成的
+pi-config/*
+!pi-config/models.json.example

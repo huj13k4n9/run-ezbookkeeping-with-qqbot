@@ -25,12 +25,12 @@ RUN apt-get update \
       python3-pip \
       tzdata \
  && rm -rf /var/lib/apt/lists/*
-
 # pi（官方推荐的装法：--ignore-scripts）
 RUN npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
  && npm cache clean --force
 
 ENV TZ=${TZ} \
+    HOME=/home/qqbot \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH=/opt/venv/bin:$PATH
@@ -43,22 +43,25 @@ RUN python3 -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
-# 应用代码（agent / .agents 由 compose 从宿主机挂进来，
-# 这样改 AGENTS.md 或换 ebktools 版本都不用重建镜像）
+# 应用代码（agent / .agents / pi-config 由 compose 从宿主机挂进来，
+# 这样改 AGENTS.md、换 ebktools 版本、配 models.json 都不用重建镜像）
 COPY qqbot/ ./qqbot/
 COPY scripts/ ./scripts/
 COPY tests/ ./tests/
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # 非 root 运行。
 #
-# 注意：/home/qqbot/.pi 必须**在镜像里就存在且属于 qqbot** ——
-# compose 把 named volume 挂到这个路径上，Docker 只在“镜像里已有该目录”时
-# 才会把镜像的属主信息带进新卷。少了这行，卷会是 root:root，
-# pi 写不进会话文件。
+# 注意：/home/qqbot/.pi 必须在**镜像里就存在且属于 qqbot**。
+# compose 里虽然会把 PI_CODING_AGENT_DIR 指到挂载目录，
+# 但没设那个变量时 pi 会回到 ~/.pi/agent，先建好更稳。
 RUN useradd --create-home --uid 10001 qqbot \
- && mkdir -p /home/qqbot/.pi /app/data /app/agent \
+ && mkdir -p /home/qqbot/.pi/agent /app/data /app/agent /app/pi-config \
+ && chmod +x /usr/local/bin/entrypoint.sh \
  && chown -R qqbot:qqbot /home/qqbot /app
 
 USER qqbot
 
+# 入口会幂等安装 PI_EXTENSIONS 里的 pi 扩展，再 exec 到 CMD
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["python", "scripts/run_bot.py"]

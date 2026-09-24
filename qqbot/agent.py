@@ -273,12 +273,31 @@ def resolve_passthrough_path(value: str | os.PathLike) -> Path:
 def build_agent_env(config, base_env: Optional[dict] = None) -> dict:
     """只透传白名单环境变量，避免把 QQ secret 泄漏给 agent 进程。
 
+    白名单条目支持两种写法：
+
+    * 精确名称，如 ``PATH``
+    * **前缀通配**，以 ``*`` 结尾，如 ``LANGFUSE_*``
+      （第三方集成（Langfuse 等）会加新变量，用前缀比逐个列举更结实）
+
     注意：`EBKTOOL_SERVER_BASEURL` / `EBKTOOL_TOKEN` 必须透传，
     否则 agent 没法调 ebktools.sh。它们只在进程环境里，
     AGENTS.md 已禁止 agent 回显。
     """
     source = base_env if base_env is not None else os.environ
-    env = {name: source[name] for name in config.agent_passthrough_env if name in source}
+    env: dict[str, str] = {}
+
+    prefixes: list[str] = []
+    for pattern in config.agent_passthrough_env:
+        if pattern.endswith("*"):
+            prefixes.append(pattern[:-1])
+        elif pattern in source:
+            env[pattern] = source[pattern]
+
+    if prefixes:
+        for name, value in source.items():
+            if name not in env and any(name.startswith(p) for p in prefixes):
+                env[name] = value
+
     # 无论是否在白名单里，都保证 ebktools 能用
     for name in ("EBKTOOL_SERVER_BASEURL", "EBKTOOL_TOKEN"):
         if name in source and name not in env:

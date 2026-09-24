@@ -1,12 +1,15 @@
 # QQ 记账机器人（qqbot + pi agent 单容器）
 #
-#   cp .env.example .env      # 填 QQ_BOT_*、EBKTOOL_*、模型 key
+#   cp .env.example .env      # 填 QQ_BOT_*、EBKTOOL_*、模型 key、（可选）LANGFUSE_*
 #   mkdir -p data && sudo chown -R 10001:10001 data   # 见下方 data 卷的说明
 #   docker compose up -d --build
 #   docker compose logs -f
 #
 # 想从宿主机先手动验证 agent：
 #   docker compose run --rm --entrypoint pi qqbot --print --tools bash,read -- "记 30 午饭"
+#
+# 想看 Langfuse 是否生效（插件自己的调试日志）：
+#   PI_LANGFUSE_DEBUG=true docker compose run --rm qqbot
 
 name: qq-bookkeeping
 
@@ -23,6 +26,11 @@ services:
     # pi 会 fork bash，init 负责收尸，避免僵尸进程堆积
     init: true
 
+    # .env 里的所有变量都会注入容器，包括 LANGFUSE_* —— pi 的 Langfuse 插件
+    # 直接读这些环境变量，所以不用在这里再列一遍。
+    #
+    # 注意：LANGFUSE_TRACING_ENABLED 千万别留成空值（空字符串可能被当成关闭），
+    # 要禁用就明确写 false，或者干脆不设这个变量。
     env_file:
       - .env
     environment:
@@ -32,29 +40,33 @@ services:
       EBKTOOL_SERVER_BASEURL: ${EBKTOOL_SERVER_BASEURL:?请在 .env 里设置 EBKTOOL_SERVER_BASEURL}
       EBKTOOL_TOKEN: ${EBKTOOL_TOKEN:?请在 .env 里设置 EBKTOOL_TOKEN}
 
-      # 容器内的绝对路径：与宿主机上这两个目录放在哪儿无关
+      # 容器内的绝对路径：与宿主机上这些目录放在哪儿无关
       QQ_BOT_AGENT_CWD: /app/agent
       QQ_BOT_EBKTOOLS_PATH: /app/.agents/skills/ezbookkeeping/scripts/ebktools.sh
+      QQ_BOT_AUTO_DOWNLOAD_DIR: /app/data/media
 
-      # 模型凭证：按你实际用的 provider 保留一个（pi 直接读这些环境变量）
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # pi 的配置目录（挂载出来，所以 models.json / settings.json / auth.json
+      # 都在宿主机上看得见、能直接改）
+      PI_CODING_AGENT_DIR: /app/pi-config
+      # 会话是运行期数据，放 data/ 里
+      PI_CODING_AGENT_SESSION_DIR: /app/data/pi-sessions
+      # 入口脚本会幂等安装这里的 pi 扩展包；留空则跳过
+      PI_EXTENSIONS: ${PI_EXTENSIONS:-npm:@langfuse/pi-observability-plugin}
 
     volumes:
-      # 图片落盘 + 引用索引。**必须持久化** —— 引用回查依赖已落盘的图片文件。
+      # 图片落盘 + 引用索引 + pi 会话。**必须持久化** ——
+      # 引用回查依赖已落盘的图片文件。
       # 注意：绑定挂载时宿主机目录的属主说了算。容器内跑的是 uid 10001，
       # 所以首次要先执行：mkdir -p data && sudo chown -R 10001:10001 data
-      # （也可以用 named volume 代替，但那样不方便从宿主机直接看图片）
       - ./data:/app/data
 
-      # pi 的会话与凭证：持久化后重启不会丢会话（按天轮换，丢了只是当天追问断掉）
-      - pi-home:/home/qqbot/.pi
+      # pi 的配置目录：models.json（自定义 LLM base URL）、settings.json、
+      # auth.json（登录凭证）、扩展包都落在这里。
+      # 同样需要 chown：mkdir -p pi-config && sudo chown -R 10001:10001 pi-config
+      - ./pi-config:/app/pi-config
 
-      # 约束文件与官方工具脚本：从宿主机挂，改完不用重建镜像。
-      # 两个目录不在本仓库下时，在 .env 里设 AGENT_DIR / AGENTS_SKILLS_DIR。
+      # 约束文件 / 官方工具脚本 / skill：只读挂载，改完不用重建镜像。
+      # 这些目录不在本仓库下时，在 .env 里设 AGENT_DIR / AGENTS_SKILLS_DIR。
       - ${AGENT_DIR:-./agent}:/app/agent:ro
       - ${AGENTS_SKILLS_DIR:-./.agents}:/app/.agents:ro
 
@@ -80,14 +92,10 @@ services:
     #tmpfs:
     #  - /tmp:size=64m
     #  - /home/qqbot/.cache:size=64m
-    #  - /home/qqbot/.npm:size=16m
+    #  - /home/qqbot/.npm:size=64m
 
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  pi-home:
-    name: qq-bookkeeping-pi-home

@@ -1,0 +1,22 @@
+{
+  "_comment": "复制成 models.json 后改成你自己的端点。这个文件在 <agent-dir>/models.json，容器里就是 /app/pi-config/models.json。",
+  "_docs": "https://pi.dev/docs 的 models.md「Configure a compatible endpoint」",
+
+  "providers": {
+    "my-proxy": {
+      "baseUrl": "https://your-llm-proxy.example.com/v1",
+      "api": "openai-completions",
+      "apiKey": "$MY_PROXY_API_KEY",
+      "models": [
+        {
+          "id": "gpt-4o",
+          "name": "GPT-4o (via proxy)",
+          "input": ["text", "image"],
+          "reasoning": false,
+          "contextWindow": 128000,
+          "maxTokens": 16384
+        }
+      ]
+    }
+  }
+}

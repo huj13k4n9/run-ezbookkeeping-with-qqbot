@@ -316,6 +316,39 @@ def test_agent_env(tmp: Path) -> None:
     check("EBKTOOL_SERVER_BASEURL 强制透传", env.get("EBKTOOL_SERVER_BASEURL") == "http://e")
     check("注入 TZ", env.get("TZ") == cfg.timezone, repr(env.get("TZ")))
 
+    # --- 前缀通配：第三方集成（Langfuse）会加新变量，逐个列举不现实 ---
+    lf = {
+        "PATH": "/usr/bin",
+        "LANGFUSE_PUBLIC_KEY": "pk-lf-1",
+        "LANGFUSE_SECRET_KEY": "sk-lf-1",
+        "LANGFUSE_BASE_URL": "https://cloud.langfuse.com",
+        "LANGFUSE_TRACING_ENVIRONMENT": "production",
+        "LANGFUSE_SOME_FUTURE_VAR": "future",   # 以后新增的也要能透传
+        "PI_LANGFUSE_DEBUG": "true",
+        "EBKTOOL_TOKEN": "tok",
+        "QQ_BOT_CLIENT_SECRET": "SHOULD-NOT-LEAK",
+    }
+    env2 = build_agent_env(cfg, lf)
+    check("LANGFUSE_* 前缀透传（已列举的）", env2.get("LANGFUSE_PUBLIC_KEY") == "pk-lf-1")
+    check("LANGFUSE_* 前缀透传（密钥）", env2.get("LANGFUSE_SECRET_KEY") == "sk-lf-1")
+    check("LANGFUSE_* 前缀透传（新增的未列举变量）", env2.get("LANGFUSE_SOME_FUTURE_VAR") == "future")
+    check("PI_LANGFUSE_DEBUG 也能透传", env2.get("PI_LANGFUSE_DEBUG") == "true")
+    check("前缀通配不影响 secret 隔离", "QQ_BOT_CLIENT_SECRET" not in env2, repr(env2))
+    check("前缀不会误拉到相似名", "QQ_BOT_LANGFUSE_X" not in env2)
+
+    # 自己配白名单时，包括前缀写法
+    cfg3 = make_config(tmp, agent_passthrough_env=("PATH", "MY_*"))
+    env3 = build_agent_env(cfg3, {"PATH": "/p", "MY_A": "1", "MY_B": "2", "OTHER": "3"})
+    check("自定义前缀生效", env3.get("MY_A") == "1" and env3.get("MY_B") == "2", repr(env3))
+    check("自定义白名单外不泄", "OTHER" not in env3, repr(env3))
+    check("EBKTOOL 仍被强保证", build_agent_env(cfg3, {"EBKTOOL_TOKEN": "t"}).get("EBKTOOL_TOKEN") == "t")
+
+    # 默认配置应当涵盖我们依赖的两组变量
+    default = BotConfig(app_id="1", client_secret="s")
+    check("默认含 LANGFUSE_* 前缀", "LANGFUSE_*" in default.agent_passthrough_env,
+          repr(default.agent_passthrough_env))
+    check("默认含 PI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR" in default.agent_passthrough_env)
+
 
 def test_build_argv(tmp: Path) -> None:
     print("\n[用例5] AgentRunner.build_argv")

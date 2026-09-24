@@ -1,5 +1,8 @@
-# 构建上下文瘦身。注意 agent / .agents 是**故意排除**的：
-# 它们由 compose 从宿主机挂载，不烤进镜像。
+# 构建上下文瘦身。
+#
+# 注意 agent / .agents / pi-config 是**故意排除**的：它们由 compose 从宿主机
+# 绑定挂载进来，不烤进镜像（所以改 AGENTS.md、换 ebktools 版本、配 models.json
+# 都不用重建镜像）。
 .git
 .gitignore
 .venv
@@ -9,11 +12,17 @@ __pycache__/
 *.pyo
 .pytest_cache
 
-# 运行时数据：绝不进镜像
+# 运行时数据与凭证：绝不进镜像
+# （.env 里有 AppID/AppSecret/Token，Dockerfile 也不 COPY 它）
 data/
 .env
 .env.*
 !.env.example
+
+# 宿主机挂载的目录（不在 Dockerfile 的 COPY 里）
+agent/
+.agents/
+pi-config/
 
 # 文档与临时文件
 *.md

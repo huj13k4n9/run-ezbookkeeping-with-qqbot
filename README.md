@@ -87,7 +87,8 @@ cp .env.example .env
 #  ├─ EBKTOOL_SERVER_BASEURL / EBKTOOL_TOKEN   （ezBookkeeping → 设置 → 令牌）
 #  └─ 一个模型 key + QQ_BOT_AGENT_MODEL         （看图入账需要多模态模型）
 
-mkdir -p data && sudo chown -R 10001:10001 data   # 容器以 uid 10001 运行，必做
+mkdir -p data pi-config && sudo chown -R 10001:10001 data pi-config
+#  ↑ 容器以 uid 10001 运行，绑定挂载的目录必须先改属主
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -107,6 +108,85 @@ python scripts/run_bot.py
 ```
 
 ---
+
+## 可观测性：Langfuse
+
+官方有现成的 pi 扩展 [`@langfuse/pi-observability-plugin`](https://github.com/langfuse/pi-observability-plugin)，
+不用自己写。每次「一条 QQ 消息 → 一次 agent 运行」会成为一条 trace，
+里面的 model 调用、token（含 cache / reasoning 拆分）、成本、工具调用都在。
+
+在 `.env` 里填：
+
+```ini
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com   # 区域必须和 key 对应
+LANGFUSE_TRACING_ENVIRONMENT=production
+```
+
+重启即可。扩展由容器入口脚本幂等安装（`PI_EXTENSIONS`），装在挂载出来的 `pi-config/` 里。
+
+**两个坑，代码里已经处理了：**
+
+1. **环境变量必须透传给 pi 进程。** qqbot 只透传白名单变量（避免把 QQ AppSecret 泄漏给 agent），
+   所以 `LANGFUSE_*` 默认就在白名单里 —— 而且用的是**前缀通配**写法，
+   这样插件以后新增变量不用改代码。`PI_LANGFUSE_*`（调试开关）也单独加了。
+2. **`LANGFUSE_TRACING_ENABLED` 不要留成空值。** 空字符串可能被当成「关闭」。
+   要禁用就明确写 `false`，或者干脆不设这个变量。
+
+排查「没有 trace」：
+
+```bash
+PI_LANGFUSE_DEBUG=true docker compose run --rm qqbot   # 插件调试日志走 stderr
+```
+
+> 官方文档：<https://langfuse.com/integrations/developer-tools/pi-agent>
+
+## 自定义 LLM 端点（base URL）
+
+pi **没有** `OPENAI_BASE_URL` 这类通用环境变量（只有 Azure 有 `AZURE_OPENAI_BASE_URL`），
+自定义端点必须走 `<agent-dir>/models.json`。这个部署里 agent dir 是挂载出来的
+`pi-config/`，所以直接改宿主机上的文件就行，不用重建镜像：
+
+```bash
+cp pi-config/models.json.example pi-config/models.json
+```
+
+```json
+{
+  "providers": {
+    "my-proxy": {
+      "baseUrl": "https://your-llm-proxy.example.com/v1",
+      "api": "openai-completions",
+      "apiKey": "$MY_PROXY_API_KEY",
+      "models": [
+        { "id": "gpt-4o", "name": "GPT-4o (via proxy)", "input": ["text", "image"] }
+      ]
+    }
+  }
+}
+```
+
+`.env` 里给它配上 key 和默认模型：
+
+```ini
+MY_PROXY_API_KEY=sk-...
+QQ_BOT_AGENT_MODEL=my-proxy/gpt-4o
+```
+
+要点：
+
+* `apiKey` 支持 `$NAME` / `${NAME}` 环境变量插值，也可以写 `!command` 从命令取 ——
+  所以密钥不用写进 `models.json`。
+* **自定义的 key 变量名要进白名单**，否则不会到 pi 进程：
+  `QQ_BOT_AGENT_PASSTHROUGH_ENV=PATH,HOME,TZ,EBKTOOL_*,MY_PROXY_*`
+  （注意这样会覆盖内置默认值，`EBKTOOL_*` 千万别漏）。
+* **看图入账必须声明 `"input": ["text", "image"]`**，否则模型不会被标记为支持图片，
+  OCR 流程会失效。
+* `api` 取值：`openai-completions`、`openai-responses`、`anthropic-messages`、
+  `google-generative-ai`、`mistral-conversations`、`azure-openai-responses`、
+  `bedrock-converse-stream`、`openai-codex-responses`、`pi-messages`。
+* 改完 `models.json` **不用重启容器**（pi 每次运行都重新读）。
 
 ## 目录结构
 
@@ -131,8 +211,14 @@ scripts/
   run_bot.py              常驻服务入口
   qqbot_test.py           命令行测试工具（鉴权/网关/订阅/发消息）
 
-tests/                    298 项离线测试
+pi-config/                pi 的配置目录（挂载出来）
+  models.json.example       自定义 LLM 端点模板
+  models.json               你自己的（gitignore）
+  settings.json             pi install 写的扩展声明（gitignore）
+
+tests/                    309 项离线测试
 docs/QQBOT.md             完整技术文档
+docker/entrypoint.sh      容器入口：幂等安装 pi 扩展
 Dockerfile
 docker-compose.yml
 ```
@@ -141,13 +227,13 @@ docker-compose.yml
 
 ## 测试
 
-全部离线，不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
+全部离线（共 309 项），不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
 
 ```bash
 python tests/test_gateway_local.py    #  26  假网关驱动状态机
 python tests/test_event_media.py      #  62  附件解析/真实下载 + 真实抓包回归
 python tests/test_refindex_quote.py   # 102  引用索引/解析/实测相关性
-python tests/test_agent.py            # 108  会话/去重/prompt/子进程/并发/清洗
+python tests/test_agent.py            # 119  会话/去重/prompt/子进程/并发/env 透传/清洗
 ```
 
 几个「固化了实测事实」的用例值得一提 —— 哪天平台行为变了，测试会立刻失败：
@@ -179,6 +265,7 @@ python tests/test_agent.py            # 108  会话/去重/prompt/子进程/并�
 | --- | --- | --- |
 | [ezBookkeeping](https://github.com/mayswind/ezbookkeeping) 的 `skills/ezbookkeeping/` | 记账执行层。**vendored** 在 `.agents/skills/ezbookkeeping/`，未做修改 | MIT，版权归 MaysWind —— 见 [LICENSE](.agents/skills/ezbookkeeping/LICENSE) 与 [SOURCE.md](.agents/skills/ezbookkeeping/SOURCE.md) |
 | [pi](https://github.com/earendil-works/pi) (`@earendil-works/pi-coding-agent`) | 约束执行与工具调用 | 见上游 |
+| [`@langfuse/pi-observability-plugin`](https://github.com/langfuse/pi-observability-plugin) | 可观测性。**不 vendored**，由容器入口脚本按需安装 | MIT |
 
 本仓库的 QQ 协议实现参考了腾讯官方文档
 （[bot.q.qq.com/wiki](https://bot.q.qq.com/wiki/)），

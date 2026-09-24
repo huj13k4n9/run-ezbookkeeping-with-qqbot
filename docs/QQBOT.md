@@ -579,8 +579,32 @@ python scripts/run_bot.py
 | `QQ_BOT_REPLY_MAX_CHARS` | `500` | 回复硬截断 |
 | `QQ_BOT_ALLOWED_OPENIDS` | 空 | 空 = 不限制 |
 
-`EBKTOOL_SERVER_BASEURL` / `EBKTOOL_TOKEN` 由 systemd `EnvironmentFile` 注入，
-**只在进程环境里**，不进 agent 上下文（AGENTS.md 也禁止回显）。
+### agent 进程的环境变量白名单
+
+`build_agent_env()` **只透传白名单里的变量**，避免把 QQ AppSecret 泄漏给 agent
+（agent 能执行 bash，`env` 一下就能看到自己的环境）。
+
+白名单支持两种写法：
+
+| 写法 | 例 | 说明 |
+| --- | --- | --- |
+| 精确名 | `PATH` | 完全匹配 |
+| 前缀通配 | `LANGFUSE_*` | 以 `*` 结尾；第三方集成会加新变量，逐个列举不现实 |
+
+内置默认值：
+
+```
+PATH HOME LANG LC_ALL TZ
+PI_CODING_AGENT_DIR PI_CODING_AGENT_SESSION_DIR PI_PACKAGE_DIR
+LANGFUSE_* PI_LANGFUSE_*
+EBKTOOL_SERVER_BASEURL EBKTOOL_TOKEN
+```
+
+用 `QQ_BOT_AGENT_PASSTHROUGH_ENV` 覆盖时是**整体替换**，注意别漏掉 `EBKTOOL_*`
+（`build_agent_env` 对这两个有兜底强保证，但你自己的 key 变量得自己加）。
+
+`EBKTOOL_SERVER_BASEURL` / `EBKTOOL_TOKEN` 只在进程环境里，
+不进 agent 上下文（AGENTS.md 也禁止回显）。
 
 ### 约束写在 agent/AGENTS.md
 
@@ -607,7 +631,7 @@ pi 从 **cwd** 向上发现 `AGENTS.md`，所以 `QQ_BOT_AGENT_CWD` 决定它读
 ### 自测
 
 ```bash
-python tests/test_agent.py   # 108 项：会话轮换/去重/prompt/子进程/超时/并发锁/输出清洗
+python tests/test_agent.py   # 119 项：会话轮换/去重/prompt/子进程/超时/并发锁/输出清洗
 ```
 
 ## 九、Docker 部署

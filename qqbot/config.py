@@ -173,10 +173,15 @@ class BotConfig:
     #: 追加任意 CLI 参数（空格分隔，如 "--thinking high"）
     agent_extra_args: Tuple[str, ...] = ()
     #: agent 进程要透传的环境变量名（其余不透传，避免泄露 QQ secret）
-    #: 注意：EBKTOOL_* 必须在这里，否则 agent 无法调 ebktools.sh
+    #: 支持前缀通配（以 * 结尾），例：LANGFUSE_*
+    #: 注意：EBKTOOL_* 必须在这里（build_agent_env 会强保证），否则 agent 调不了 ebktools.sh
     agent_passthrough_env: Tuple[str, ...] = (
         "PATH", "HOME", "LANG", "LC_ALL", "TZ",
-        "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR",
+        # pi 的配置与会话目录
+        "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "PI_PACKAGE_DIR",
+        # Langfuse 观测（官方 pi 插件读这些变量；PI_LANGFUSE_DEBUG 是它的调试开关）
+        "LANGFUSE_*", "PI_LANGFUSE_*",
+        # 记账执行层
         "EBKTOOL_SERVER_BASEURL", "EBKTOOL_TOKEN",
     )
 
@@ -268,7 +273,8 @@ class BotConfig:
                 _env_list("QQ_BOT_AGENT_PASSTHROUGH_ENV")
                 or (
                     "PATH", "HOME", "LANG", "LC_ALL", "TZ",
-                    "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR",
+                    "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "PI_PACKAGE_DIR",
+                    "LANGFUSE_*", "PI_LANGFUSE_*",
                     "EBKTOOL_SERVER_BASEURL", "EBKTOOL_TOKEN",
                 )
             ),
