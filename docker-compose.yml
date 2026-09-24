@@ -19,6 +19,8 @@ services:
       context: .
       args:
         PI_VERSION: ${PI_VERSION:-0.87.1}
+        # 构建时预装扩展；和下面的运行期变量保持一致
+        PI_EXTENSIONS: ${PI_EXTENSIONS:-npm:@langfuse/pi-observability-plugin}
     image: qq-bookkeeping:${PI_VERSION:-0.87.1}
     container_name: qq-bookkeeping
     restart: unless-stopped
@@ -28,7 +30,8 @@ services:
 
     # .env 里的所有变量都会注入容器。
     # 注意：Langfuse 的 key/baseUrl **不在环境变量里**，而是放在
-    # pi-config/langfuse.json（见那个目录下的 .example）。
+    # pi-config/langfuse.json（见那个目录下的 .example）—— 那个目录烤在镜像里，
+    # 改了要 docker compose up -d --build。
     env_file:
       - .env
     environment:
@@ -43,8 +46,8 @@ services:
       QQ_BOT_EBKTOOLS_PATH: /app/.agents/skills/ezbookkeeping/scripts/ebktools.sh
       QQ_BOT_AUTO_DOWNLOAD_DIR: /app/data/media
 
-      # pi 的配置目录（挂载出来，所以 models.json / settings.json / auth.json
-      # 都在宿主机上看得见、能直接改）
+      # pi 的配置目录。**烤在镜像里**（见 Dockerfile 的 COPY pi-config/），
+      # 改完 pi-config/ 下的文件要重新 build 才生效。
       PI_CODING_AGENT_DIR: /app/pi-config
       # 会话是运行期数据，放 data/ 里
       PI_CODING_AGENT_SESSION_DIR: /app/data/pi-sessions
@@ -58,20 +61,10 @@ services:
       # 所以首次要先执行：mkdir -p data && sudo chown -R 10001:10001 data
       - ./data:/app/data
 
-      # pi 的配置目录：models.json（自定义 LLM base URL）、settings.json、
-      # auth.json（登录凭证）、扩展包都落在这里。
-      # 同样需要 chown：mkdir -p pi-config && sudo chown -R 10001:10001 pi-config
-      - ./pi-config:/app/pi-config
-
       # 约束文件 / 官方工具脚本 / skill：只读挂载，改完不用重建镜像。
       # 这些目录不在本仓库下时，在 .env 里设 AGENT_DIR / AGENTS_SKILLS_DIR。
       - ${AGENT_DIR:-./agent}:/app/agent:ro
       - ${AGENTS_SKILLS_DIR:-./.agents}:/app/.agents:ro
-
-    # ezBookkeeping 跑在宿主机上时，把 EBKTOOL_SERVER_BASEURL 写成
-    # http://host.docker.internal:8080
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
     # agent 最长会跑 QQ_BOT_AGENT_TIMEOUT（默认 120s），给足退出时间
     stop_grace_period: 130s
@@ -83,14 +76,6 @@ services:
     mem_limit: 1g
     # node + ripgrep + bash 子进程会占一些 pid，给宽一点避免 fork 失败
     pids_limit: 512
-
-    # 只读根文件系统 —— 更强的隔离。没在真实环境实测过，
-    # 若启动报 "Read-only file system"，把这三项一起注释掉即可。
-    #read_only: true
-    #tmpfs:
-    #  - /tmp:size=64m
-    #  - /home/qqbot/.cache:size=64m
-    #  - /home/qqbot/.npm:size=64m
 
     logging:
       driver: json-file

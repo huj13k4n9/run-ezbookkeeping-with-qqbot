@@ -43,12 +43,20 @@ RUN python3 -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
-# 应用代码（agent / .agents / pi-config 由 compose 从宿主机挂进来，
-# 这样改 AGENTS.md、换 ebktools 版本、配 models.json 都不用重建镜像）
+# 应用代码（agent / .agents 由 compose 从宿主机挂进来，
+# 这样改 AGENTS.md 或换 ebktools 版本都不用重建镜像）
 COPY qqbot/ ./qqbot/
 COPY scripts/ ./scripts/
 COPY tests/ ./tests/
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+
+# pi 的配置直接烤进镜像（不挂卷）：
+#   models.json    自定义 LLM 端点
+#   langfuse.json  Langfuse 凭证
+# 改完要重新 build 才生效。
+# 注意：pi install 写的 settings.json 也落在 pi-config/ 里，
+# 但那是在运行时（构建时预装的会进镜像），容器重建后会重装。
+COPY pi-config/ ./pi-config/
 
 # 非 root 运行。
 #
@@ -61,6 +69,16 @@ RUN useradd --create-home --uid 10001 qqbot \
  && chown -R qqbot:qqbot /home/qqbot /app
 
 USER qqbot
+
+# 把 PI_EXTENSIONS 里的 pi 扩展预先装进镜像，好处：
+#   * 启动时不依赖网络（VPS 离线也能起来）
+#   * 启动更快
+# 入口脚本仍会做幂等兜底（镜像外追加的扩展、或这一层被清理时）。
+ARG PI_EXTENSIONS="npm:@langfuse/pi-observability-plugin"
+RUN for src in ${PI_EXTENSIONS}; do \
+      PI_CODING_AGENT_DIR=/app/pi-config pi install "$src" \
+      || echo "[build] 警告: $src 预装失败（离线？），改为启动时安装"; \
+    done
 
 # 入口会幂等安装 PI_EXTENSIONS 里的 pi 扩展，再 exec 到 CMD
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

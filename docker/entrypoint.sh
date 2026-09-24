@@ -20,8 +20,13 @@ fi
 
 if [ -n "${PI_EXTENSIONS:-}" ]; then
     for src in $PI_EXTENSIONS; do
+        # 镜像构建时已经预装过，这里先问一下 pi list，能省掉一次网络往返。
+        # grep 失败（输出格式变了 / pi list 不可用）则照样装 —— 宁可多做不可少做。
+        if pi list 2>/dev/null | grep -qF "$src"; then
+            printf '[entrypoint] pi 扩展已就绪: %s\n' "$src"
+            continue
+        fi
         printf '[entrypoint] 安装 pi 扩展: %s\n' "$src"
-        # pi install 是幂等的：已声明过就只是核对一下
         if ! PI_CODING_AGENT_DIR="$AGENT_DIR" pi install "$src"; then
             printf '[entrypoint] 警告: %s 安装失败（离线或 npm 不可用），继续启动\n' "$src"
         fi

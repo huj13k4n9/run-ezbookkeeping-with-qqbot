@@ -1,8 +1,8 @@
 # 构建上下文瘦身。
 #
-# 注意 agent / .agents / pi-config 是**故意排除**的：它们由 compose 从宿主机
-# 绑定挂载进来，不烤进镜像（所以改 AGENTS.md、换 ebktools 版本、配 models.json
-# 都不用重建镜像）。
+# 注意 agent / .agents 是**故意排除**的：它们由 compose 从宿主机绑定挂载进来，
+# 不烤进镜像（所以改 AGENTS.md、换 ebktools 版本都不用重建镜像）。
+# pi-config/ 相反 —— 它要被 COPY 进镜像，不能排除。
 .git
 .gitignore
 .venv
@@ -22,7 +22,8 @@ data/
 # 宿主机挂载的目录（不在 Dockerfile 的 COPY 里）
 agent/
 .agents/
-pi-config/
+
+# 注意：pi-config/ 不在这里 —— 它由 Dockerfile COPY 进镜像
 
 # 文档与临时文件
 *.md
