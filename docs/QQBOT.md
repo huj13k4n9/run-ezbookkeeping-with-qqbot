@@ -596,9 +596,13 @@ python scripts/run_bot.py
 ```
 PATH HOME LANG LC_ALL TZ
 PI_CODING_AGENT_DIR PI_CODING_AGENT_SESSION_DIR PI_PACKAGE_DIR
-LANGFUSE_* PI_LANGFUSE_*
+PI_LANGFUSE_*
 EBKTOOL_SERVER_BASEURL EBKTOOL_TOKEN
 ```
+
+> Langfuse 的 **key / baseUrl 不走环境变量**，放在 `<agent-dir>/langfuse.json`
+> （容器里是 `pi-config/langfuse.json`）。白名单里只留 `PI_LANGFUSE_*`
+> 这类调试与调参开关。
 
 用 `QQ_BOT_AGENT_PASSTHROUGH_ENV` 覆盖时是**整体替换**，注意别漏掉 `EBKTOOL_*`
 （`build_agent_env` 对这两个有兜底强保证，但你自己的 key 变量得自己加）。

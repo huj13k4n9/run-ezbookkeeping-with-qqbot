@@ -1,0 +1,16 @@
+{
+  "_comment": "复制成 langfuse.json 后填你自己的 key。这个文件在 <agent-dir>/langfuse.json，容器里就是 /app/pi-config/langfuse.json。",
+  "_security": "里面有 secretKey —— pi-config/ 已在 .gitignore 里，别提交、别外传，建议 chmod 600。",
+  "_docs": "https://langfuse.com/integrations/developer-tools/pi-agent",
+
+  "publicKey": "pk-lf-...",
+  "secretKey": "sk-lf-...",
+
+  "_baseUrl_note": "区域必须和 key 对应。省略则默认 EU。US=https://us.cloud.langfuse.com JP=https://jp.cloud.langfuse.com HIPAA=https://hipaa.cloud.langfuse.com",
+  "baseUrl": "https://cloud.langfuse.com",
+
+  "_optional_note": "下面三个是可选的标签，用来在 Langfuse 里筛选",
+  "userId": "",
+  "environment": "production",
+  "release": ""
+}

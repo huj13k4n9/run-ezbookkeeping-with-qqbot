@@ -115,30 +115,45 @@ python scripts/run_bot.py
 不用自己写。每次「一条 QQ 消息 → 一次 agent 运行」会成为一条 trace，
 里面的 model 调用、token（含 cache / reasoning 拆分）、成本、工具调用都在。
 
-在 `.env` 里填：
+**配置走文件，不走环境变量** —— 和 pi 的 `models.json` 一样，放进 pi 的配置目录：
 
-```ini
-LANGFUSE_PUBLIC_KEY=pk-lf-...
-LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_BASE_URL=https://cloud.langfuse.com   # 区域必须和 key 对应
-LANGFUSE_TRACING_ENVIRONMENT=production
+```bash
+cp pi-config/langfuse.json.example pi-config/langfuse.json
+# 填 publicKey / secretKey，并按 key 的区域改 baseUrl
+chmod 600 pi-config/langfuse.json      # 里面有 secretKey
+docker compose up -d
 ```
 
-重启即可。扩展由容器入口脚本幂等安装（`PI_EXTENSIONS`），装在挂载出来的 `pi-config/` 里。
+`baseUrl` 的区域必须和 key 对应（省略则默认 EU）：
 
-**两个坑，代码里已经处理了：**
+| 区域 | baseUrl |
+| --- | --- |
+| EU | `https://cloud.langfuse.com` |
+| US | `https://us.cloud.langfuse.com` |
+| JP | `https://jp.cloud.langfuse.com` |
+| HIPAA | `https://hipaa.cloud.langfuse.com` |
 
-1. **环境变量必须透传给 pi 进程。** qqbot 只透传白名单变量（避免把 QQ AppSecret 泄漏给 agent），
-   所以 `LANGFUSE_*` 默认就在白名单里 —— 而且用的是**前缀通配**写法，
-   这样插件以后新增变量不用改代码。`PI_LANGFUSE_*`（调试开关）也单独加了。
-2. **`LANGFUSE_TRACING_ENABLED` 不要留成空值。** 空字符串可能被当成「关闭」。
-   要禁用就明确写 `false`，或者干脆不设这个变量。
+可选字段：`userId`、`environment`、`release`（用来在 Langfuse 里筛选）。
+
+**为什么不走环境变量**：密钥要跟着配置文件走，而不是散在 `.env` 里再层层透传。
+插件本身两种都支持（环境变量优先），但这里刻意只留文件这条路径 ——
+qqbot 的白名单里**只保留 `PI_LANGFUSE_*`**（`PI_LANGFUSE_DEBUG` 调试开关、
+`PI_LANGFUSE_MAX_CHARS` 截断长度），`LANGFUSE_*` 一律不透传。
+
+扩展由容器入口脚本幂等安装（`PI_EXTENSIONS`），装在挂载出来的 `pi-config/` 里。
+
+**想关掉追踪**：把 `pi-config/langfuse.json` 删掉或改名即可。
+（插件还有个只认环境变量的 kill switch `LANGFUSE_TRACING_ENABLED=false`，
+但既然配置已经走文件，用文件开关就够了。）
 
 排查「没有 trace」：
 
 ```bash
-PI_LANGFUSE_DEBUG=true docker compose run --rm qqbot   # 插件调试日志走 stderr
+# 跑一次真实记账，同时打开插件调试日志（走 stderr）
+docker compose run --rm -e PI_LANGFUSE_DEBUG=true   --entrypoint pi qqbot --print --tools bash,read -- "记 1 元 连通性测试"
 ```
+
+调试日志会说明它有没有读到 `langfuse.json`、有没有成功上传。
 
 > 官方文档：<https://langfuse.com/integrations/developer-tools/pi-agent>
 
@@ -213,7 +228,9 @@ scripts/
 
 pi-config/                pi 的配置目录（挂载出来）
   models.json.example       自定义 LLM 端点模板
+  langfuse.json.example     Langfuse 凭证模板
   models.json               你自己的（gitignore）
+  langfuse.json             你自己的，含 secretKey（gitignore）
   settings.json             pi install 写的扩展声明（gitignore）
 
 tests/                    309 项离线测试

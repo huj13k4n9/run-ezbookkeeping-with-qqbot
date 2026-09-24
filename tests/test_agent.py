@@ -316,23 +316,25 @@ def test_agent_env(tmp: Path) -> None:
     check("EBKTOOL_SERVER_BASEURL 强制透传", env.get("EBKTOOL_SERVER_BASEURL") == "http://e")
     check("注入 TZ", env.get("TZ") == cfg.timezone, repr(env.get("TZ")))
 
-    # --- 前缀通配：第三方集成（Langfuse）会加新变量，逐个列举不现实 ---
+    # --- Langfuse：配置走文件，环境变量只留调试/调参开关 ---
     lf = {
         "PATH": "/usr/bin",
+        # 这些是插件的**配置**，我们刻意不透传（要写在 <agent-dir>/langfuse.json）
         "LANGFUSE_PUBLIC_KEY": "pk-lf-1",
         "LANGFUSE_SECRET_KEY": "sk-lf-1",
         "LANGFUSE_BASE_URL": "https://cloud.langfuse.com",
-        "LANGFUSE_TRACING_ENVIRONMENT": "production",
-        "LANGFUSE_SOME_FUTURE_VAR": "future",   # 以后新增的也要能透传
+        # 这两个是调试/调参开关，应当透传
         "PI_LANGFUSE_DEBUG": "true",
+        "PI_LANGFUSE_MAX_CHARS": "5000",
         "EBKTOOL_TOKEN": "tok",
         "QQ_BOT_CLIENT_SECRET": "SHOULD-NOT-LEAK",
     }
     env2 = build_agent_env(cfg, lf)
-    check("LANGFUSE_* 前缀透传（已列举的）", env2.get("LANGFUSE_PUBLIC_KEY") == "pk-lf-1")
-    check("LANGFUSE_* 前缀透传（密钥）", env2.get("LANGFUSE_SECRET_KEY") == "sk-lf-1")
-    check("LANGFUSE_* 前缀透传（新增的未列举变量）", env2.get("LANGFUSE_SOME_FUTURE_VAR") == "future")
-    check("PI_LANGFUSE_DEBUG 也能透传", env2.get("PI_LANGFUSE_DEBUG") == "true")
+    check("LANGFUSE_* 配置**不**透传（改走 langfuse.json）",
+          "LANGFUSE_PUBLIC_KEY" not in env2 and "LANGFUSE_SECRET_KEY" not in env2
+          and "LANGFUSE_BASE_URL" not in env2, repr(env2))
+    check("PI_LANGFUSE_DEBUG 透传（排查用）", env2.get("PI_LANGFUSE_DEBUG") == "true")
+    check("PI_LANGFUSE_MAX_CHARS 透传（调参）", env2.get("PI_LANGFUSE_MAX_CHARS") == "5000")
     check("前缀通配不影响 secret 隔离", "QQ_BOT_CLIENT_SECRET" not in env2, repr(env2))
     check("前缀不会误拉到相似名", "QQ_BOT_LANGFUSE_X" not in env2)
 
@@ -345,7 +347,10 @@ def test_agent_env(tmp: Path) -> None:
 
     # 默认配置应当涵盖我们依赖的两组变量
     default = BotConfig(app_id="1", client_secret="s")
-    check("默认含 LANGFUSE_* 前缀", "LANGFUSE_*" in default.agent_passthrough_env,
+    check("默认含 PI_LANGFUSE_* 前缀", "PI_LANGFUSE_*" in default.agent_passthrough_env,
+          repr(default.agent_passthrough_env))
+    check("默认**不含** LANGFUSE_*（配置走文件）",
+          not any(e == "LANGFUSE_*" for e in default.agent_passthrough_env),
           repr(default.agent_passthrough_env))
     check("默认含 PI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR" in default.agent_passthrough_env)
 

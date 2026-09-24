@@ -179,8 +179,9 @@ class BotConfig:
         "PATH", "HOME", "LANG", "LC_ALL", "TZ",
         # pi 的配置与会话目录
         "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "PI_PACKAGE_DIR",
-        # Langfuse 观测（官方 pi 插件读这些变量；PI_LANGFUSE_DEBUG 是它的调试开关）
-        "LANGFUSE_*", "PI_LANGFUSE_*",
+        # Langfuse 的配置（key/baseUrl）读 <agent-dir>/langfuse.json，**不走环境变量**；
+        # 这里只放调试与调参开关（PI_LANGFUSE_DEBUG / PI_LANGFUSE_MAX_CHARS）
+        "PI_LANGFUSE_*",
         # 记账执行层
         "EBKTOOL_SERVER_BASEURL", "EBKTOOL_TOKEN",
     )
@@ -274,7 +275,7 @@ class BotConfig:
                 or (
                     "PATH", "HOME", "LANG", "LC_ALL", "TZ",
                     "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "PI_PACKAGE_DIR",
-                    "LANGFUSE_*", "PI_LANGFUSE_*",
+                    "PI_LANGFUSE_*",
                     "EBKTOOL_SERVER_BASEURL", "EBKTOOL_TOKEN",
                 )
             ),
