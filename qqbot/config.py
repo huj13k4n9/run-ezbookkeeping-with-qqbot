@@ -201,6 +201,9 @@ class BotConfig:
     agent_timeout: float = 120.0
     #: 透传 --model（多模态模型填这里）；空 = 用 pi 默认模型
     agent_model: Optional[str] = None
+    #: pi 的 models.json 路径；空 = 按 pi 的规则推到 <agent-dir>/models.json。
+    #: 端点、密钥、模型名都可以写在那一个文件里。
+    agent_models_json: Optional[str] = None
     #: 全局并发上限（同时跑几个 agent）
     agent_max_concurrency: int = 2
     #: 追加任意 CLI 参数（空格分隔，如 "--thinking high"）
@@ -289,6 +292,7 @@ class BotConfig:
             agent_tools=_env("QQ_BOT_AGENT_TOOLS") or "bash,read",
             agent_timeout=float(_env_int("QQ_BOT_AGENT_TIMEOUT", default=120)),
             agent_model=_env_opt_str("QQ_BOT_AGENT_MODEL"),
+            agent_models_json=_env_opt_str("QQ_BOT_AGENT_MODELS_JSON"),
             agent_max_concurrency=_env_int("QQ_BOT_AGENT_MAX_CONCURRENCY", default=2),
             agent_extra_args=tuple(
                 part for part in (_env("QQ_BOT_AGENT_EXTRA_ARGS") or "").split() if part

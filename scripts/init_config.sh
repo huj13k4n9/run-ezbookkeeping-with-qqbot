@@ -20,9 +20,21 @@ if [ ! -e "$DIR/models.json" ]; then
     cat > "$DIR/models.json" <<'JSON'
 {
   "providers": {}
+
+  // 想用自己的中转 / 网关（自定义 LLM base URL）？
+  // 把上面那行换成下面这样，端点、密钥、模型名就都在这一个文件里了：
+  //
+  // "defaultModel": "anthropic/claude-sonnet-4-5",
+  // "providers": {
+  //   "anthropic": { "baseUrl": "https://your-relay.example.com", "apiKey": "sk-..." }
+  // }
+  //
+  // 注意：只支持 // 行注释和尾随逗号，写 /* */ 块注释会让 pi 静默忽略整个文件。
+  // 改完：docker compose restart qqbot
 }
 JSON
-    echo "[init-config] 已生成 pi-config/models.json（空配置）"
+    chmod 600 "$DIR/models.json"   # 可能含密钥
+    echo "[init-config] 已生成 pi-config/models.json（空配置 + 带注释的模板）"
     created=1
 fi
 

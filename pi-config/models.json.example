@@ -1,62 +1,69 @@
-// pi 的模型配置。用法：sh scripts/init_config.sh 会生成一个空配置，
+// pi 的模型配置。端点、密钥、模型名**都写在这一个文件里**。
+//
+// 用法：sh scripts/init_config.sh 会生成一份带模板注释的空配置，
 // 或者 cp 本文件成 models.json 再改。
-// 它按文件挂载到 /app/pi-config/models.json，改完 docker compose restart qqbot 即可。
+// 它按文件挂载到 /app/pi-config/models.json，改完 `docker compose restart qqbot` 即可。
 //
 // ⚠️ 语法限制（实测）：只支持 // 行注释和**尾随逗号**，
 //    **不支持 /* */ 块注释**。写错的话 models.json 会被 pi 整个忽略，
-//    而且**不会有任何报错** —— 表现是「配置没生效」。容器入口脚本会检查这一条。
-//
-// 文档：pi 的 docs/models.md「Configure a compatible endpoint」
+//    而且**不会有任何报错** —— 表现是「配置没生效」。
+//    容器入口脚本和 run_bot.py 的 --check 都会验这一条。
 
 
 // ===========================================================================
-// 场景 A（推荐）：把**内置 provider** 指向自己的中转 / 网关 / 代理
+// 场景 A（推荐）：用中转 / 网关 / 代理
 // ===========================================================================
 //
-// 只写 baseUrl 就行 —— 模型 id、上下文长度、是否支持图片这些
+// 三件事，一个文件：
+//   defaultModel  模型名（qqbot 读它当 --model 传给 pi）
+//   baseUrl       端点地址
+//   apiKey        密钥（也支持 "$环境变量名" 或 "!命令"）
+//
+// defaultModel 不是 pi 认的键 —— pi 的默认模型在 settings.json 里，
+// models.json 只管端点。qqbot 读这个键并作为 --model 传下去，
+// 这样你就不必在 .env 和 json 两头填了。pi 对未知顶层键不作限制（已实测）。
+//
+// 只写 baseUrl 就够了 —— 模型 id、上下文长度、是否支持图片这些
 // 全部沿用 pi 内置目录，不用一个个重写。
 //
-// 实测 pi 内部是这么合并的（dist/core/model-config.js 的 applyModelsJson）：
+// 实测 pi 内部的合并逻辑（dist/core/model-config.js 的 applyModelsJson）：
 //
 //     baseUrl: config.baseUrl ?? model.baseUrl
 //
-// 也就是该 provider 下的**所有内置模型**都改走这个地址，协议不变
+// 即该 provider 下的**所有内置模型**都改走这个地址，协议不变
 // （anthropic 仍然 POST 到 <baseUrl>/v1/messages）。
-//
-// 配好之后 .env 里指定模型即可：
-//
-//     QQ_BOT_AGENT_MODEL=anthropic/claude-sonnet-4-5
-//
-// 注意 baseUrl 后面不要带 /v1 —— pi 自己会拼。中转站要求带路径前缀的话，
-// 写成 https://relay.example.com/anthropic 这样即可（实测拼成
-// /anthropic/v1/messages）。
+// 覆盖是**按 provider 隔离**的：改了 anthropic 不影响 openai（已实测）。
 
 {
+  "defaultModel": "anthropic/claude-sonnet-4-5",
+
   "providers": {
     "anthropic": {
       "baseUrl": "https://your-relay.example.com",
-      // apiKey 可以用 $NAME / ${NAME} 插值（也可写 !command 从命令取）
-      // ⚠️ 用到的环境变量必须真的进到容器里，并且**在 agent 白名单内**，
-      //    否则 pi 会报 "No API key found"。
-      //    内置白名单已含各家的 *_API_KEY，自定义变量名要加
-      //    QQ_BOT_AGENT_PASSTHROUGH_ENV。
-      "apiKey": "$ANTHROPIC_API_KEY",
+      "apiKey": "sk-...",
     },
 
-    // 同时给多个 provider 换地址也行，互不影响
+    // 同时给多个 provider 换地址也行
     "openai": {
       "baseUrl": "https://your-relay.example.com/openai",
-      "apiKey": "$OPENAI_API_KEY",
+      "apiKey": "sk-...",
     },
   },
 }
+
+// 若在 models.json 里写了 "$MY_RELAY_KEY" 这种插值，那个环境变量必须：
+//   1) 真的进到容器里（写在 .env 里）
+//   2) **在 agent 白名单内** —— 内置白名单含常见 provider 的 *_API_KEY，
+//      自定义变量名要加进 QQ_BOT_AGENT_PASSTHROUGH_ENV
+// 漏了的话报错是 "No API key found"，而不是「变量不存在」，不太好认。
+// 直接把密钥写在这里最省事：models.json 是 gitignore 的，不会进仓库。
 
 
 // ===========================================================================
 // 场景 B：pi 不认识的端点，整套自定义 provider
 // ===========================================================================
 //
-// 用在 Ollama / LM Studio / vLLM / SGLang，或者中转站的协议不标准时。
+// 用在 Ollama / LM Studio / vLLM / SGLang，或协议不标准的中转。
 // 要自己声明 models 列表。
 //
 // 关键点：
@@ -67,9 +74,8 @@
 //     bedrock-converse-stream | openai-codex-responses | pi-messages
 //   * 本地服务不需要真 key，随便填一个（比如 "ollama"）就能让模型可用。
 //
-// 配好之后：QQ_BOT_AGENT_MODEL=my-proxy/gpt-4o
-//
 // {
+//   "defaultModel": "my-proxy/gpt-4o",
 //   "providers": {
 //     "my-proxy": {
 //       "baseUrl": "https://your-llm-proxy.example.com/v1",

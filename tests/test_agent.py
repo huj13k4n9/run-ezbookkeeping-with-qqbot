@@ -34,7 +34,9 @@ from qqbot.agent import (  # noqa: E402
     SessionManager,
     build_agent_env,
     build_prompt,
+    load_models_json,
     parse_event_time,
+    strip_json_comments,
 )
 from qqbot.bot import Event, QQBot, sanitize_reply  # noqa: E402
 from qqbot.config import DEFAULT_AGENT_PASSTHROUGH_ENV, BotConfig  # noqa: E402
@@ -389,6 +391,74 @@ def test_agent_env(tmp: Path) -> None:
           ).agent_passthrough_env == ("PATH",))
 
 
+def test_models_json(tmp: Path) -> None:
+    print("\n[用例4b] models.json 里的端点 / 密钥 / 模型名")
+
+    # --- strip_json_comments 必须和 pi 的 JS 实现一致 ---
+    same = [
+        ('{"a": 1} // 尾注释', '{"a": 1} '),
+        ('{"s": "// 不是注释"}', '{"s": "// 不是注释"}'),
+        ('{"a": [1, 2,],}', '{"a": [1, 2]}'),
+        ('{"u": "http://x//y"}', '{"u": "http://x//y"}'),
+        ('{"a": ",}"}', '{"a": ",}"}'),
+    ]
+    for src, want in same:
+        got = strip_json_comments(src)
+        check(f"strip_json_comments {src!r}", got == want, f"got={got!r} want={want!r}")
+
+    # --- 模型解析优先级 ---
+    def cfg_with(tmp_name: str, body: str | None, **kw) -> BotConfig:
+        base = tmp / tmp_name
+        ws = base / "ws"
+        ws.mkdir(parents=True, exist_ok=True)
+        (ws / "AGENTS.md").write_text("# t\n", encoding="utf-8")
+        mj = base / "models.json"
+        if body is not None:
+            mj.write_text(body, encoding="utf-8")
+        return make_config(base, agent_models_json=str(mj), **kw)
+
+    # 端点 + 密钥 + 模型名写在一个文件里：不再需要任何环境变量
+    one_file = cfg_with(
+        "one",
+        '{\n  // 端点、密钥、模型名全在这\n  "defaultModel": "my-relay/gpt-4o",\n'
+        '  "providers": { "my-relay": { "baseUrl": "http://x", "apiKey": "sk-1", }, },\n}',
+    )
+    runner = AgentRunner(one_file)
+    check("从 models.json 读出 defaultModel", runner.model == "my-relay/gpt-4o", repr(runner.model))
+    argv = runner.build_argv("s", "hi", [])
+    check("defaultModel 进了 --model", "--model" in argv and argv[argv.index("--model") + 1] == "my-relay/gpt-4o", repr(argv))
+    check("来源标记指向文件", runner.model_source.endswith("models.json"), runner.model_source)
+
+    # 环境变量优先（想临时换模型不用改文件）
+    both = cfg_with("both", '{"defaultModel": "from-json/x"}', agent_model="from-env/y")
+    runner_both = AgentRunner(both)
+    check("QQ_BOT_AGENT_MODEL 覆盖文件", runner_both.model == "from-env/y", repr(runner_both.model))
+    check("来源标记指向环境变量", runner_both.model_source == "QQ_BOT_AGENT_MODEL", runner_both.model_source)
+
+    # 没有这个键 / 文件不存在 = 不传 --model，让 pi 自己决定
+    for label, body in (("没有 defaultModel", '{"providers": {}}'), ("文件不存在", None)):
+        runner_plain = AgentRunner(cfg_with("nokey", body))
+        check(f"{label} 时不传 --model", "--model" not in runner_plain.build_argv("s", "p", []))
+        check(f"{label} 时无问题", not runner_plain.models_json_problem, repr(runner_plain.models_json_problem))
+
+    # 解析失败的要将问题报到启动自检里（pi 自己会静默忽略）
+    broken = cfg_with("broken", '{\n  /* 块注释 pi 不认 */\n  "providers": {}\n}')
+    runner_broken = AgentRunner(broken)
+    check("坏 models.json 不抛异常", runner_broken.model is None)
+    check("坏 models.json 有说明", bool(runner_broken.models_json_problem), repr(runner_broken.models_json_problem))
+    check("坏 models.json 进 validate()",
+          any("解析失败" in p for p in runner_broken.validate()), repr(runner_broken.validate()))
+
+    # defaultModel 类型不对也不能当模型用
+    wrong_type = AgentRunner(cfg_with("badtype", '{"defaultModel": 123}'))
+    check("defaultModel 不是字符串则忽略", wrong_type.model is None, repr(wrong_type.model))
+    check("defaultModel 类型不对有说明", bool(wrong_type.models_json_problem))
+
+    # load_models_json 是纯函数，直接测一下返回形状
+    value, problem = load_models_json(one_file)
+    check("load_models_json 返回元组", value == "my-relay/gpt-4o" and problem is None, f"{value!r} {problem!r}")
+
+
 def test_build_argv(tmp: Path) -> None:
     print("\n[用例5] AgentRunner.build_argv")
     cfg = make_config(tmp, agent_model="multimodal:high", agent_extra_args=("--thinking", "high"))
@@ -611,6 +681,7 @@ def main() -> int:
         test_parse_event_time()
         test_ebktools_path_and_validate(tmp)
         test_agent_env(tmp)
+        test_models_json(tmp)
         test_build_argv(tmp)
         test_runner_run(tmp)
         test_sanitize_reply()

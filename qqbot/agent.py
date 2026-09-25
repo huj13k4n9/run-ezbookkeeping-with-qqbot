@@ -14,8 +14,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import threading
@@ -34,6 +36,84 @@ if TYPE_CHECKING:  # pragma: no cover
     from .bot import Event
 
 log = logging.getLogger("qqbot.agent")
+
+
+# ============================================================ pi 的 models.json
+# pi 的 JSON 配置文件支持 // 行注释和尾随逗号（**不支持** /* */ 块注释）——
+# 见 pi 的 dist/utils/json.js#stripJsonComments。
+#
+# 这里用**完全相同**的规则实现一遍：同一份文件 pi 读得懂而我们读不懂
+# （或反过来）是最难查的一类问题。
+_JSON_STR_OR_LINECOMMENT = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*')
+_JSON_STR_OR_TRAILING_COMMA = re.compile(r'"(?:\\.|[^"\\])*"|,(\s*[}\]])')
+
+
+def strip_json_comments(text: str) -> str:
+    """按 pi 的规则去掉 ``//`` 行注释和尾随逗号，字符串字面量原样保留。"""
+
+    def drop_line_comment(match: re.Match[str]) -> str:
+        found = match.group(0)
+        return found if found[0] == '"' else ""
+
+    def drop_trailing_comma(match: re.Match[str]) -> str:
+        if match.group(1) is not None:
+            return match.group(1)
+        found = match.group(0)
+        return found if found[0] == '"' else ""
+
+    text = _JSON_STR_OR_LINECOMMENT.sub(drop_line_comment, text)
+    return _JSON_STR_OR_TRAILING_COMMA.sub(drop_trailing_comma, text)
+
+
+def resolve_models_json_path(config) -> Path:  # noqa: ANN001
+    """定位 pi 的 models.json。
+
+    优先用显式配置（``QQ_BOT_AGENT_MODELS_JSON``），否则按 pi 的规则：
+    ``$PI_CODING_AGENT_DIR/models.json``（默认 ``~/.pi/agent/models.json``）。
+    """
+    explicit = getattr(config, "agent_models_json", None)
+    if explicit:
+        return Path(explicit).expanduser()
+    agent_dir = os.environ.get("PI_CODING_AGENT_DIR") or "~/.pi/agent"
+    return Path(agent_dir).expanduser() / "models.json"
+
+
+def load_models_json(config) -> tuple[Optional[str], Optional[str]]:  # noqa: ANN001
+    """读 models.json，返回 ``(defaultModel, 问题描述)``。
+
+    为什么自己读这个键：pi 的默认模型在 ``settings.json`` 里，而
+    ``models.json`` 只管端点 —— 于是用户得在**两个**文件（外加 `.env`）
+    里分别填 apiKey / baseUrl / 模型名。这里把 pi 会忽略的 ``defaultModel``
+    读出来当 ``--model`` 用，就能让端点、密钥、模型名全放在一个文件里。
+
+    pi 对未知顶层键不作限制（已实测），所以多加这个键不影响 pi 自己。
+    文件不存在 = 正常情况，不算问题。
+    """
+    path = resolve_models_json_path(config)
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        return None, f"读不了 {path}: {exc}"
+
+    try:
+        data = json.loads(strip_json_comments(raw))
+    except (ValueError, TypeError) as exc:
+        return None, (
+            f"{path} 解析失败: {exc}"
+            "（只支持 // 行注释和尾随逗号，不支持 /* */ 块注释）"
+        )
+
+    if not isinstance(data, dict):
+        return None, f"{path} 的顶层应该是个对象"
+
+    value = data.get("defaultModel")
+    if value is None:
+        return None, None
+    if not isinstance(value, str) or not value.strip():
+        return None, f"{path} 里的 defaultModel 应该是非空字符串"
+    return value.strip(), None
 
 
 # ============================================================ 结果
@@ -315,6 +395,28 @@ class AgentRunner:
         if not self.cwd.is_absolute():
             self.cwd = (Path.cwd() / self.cwd).resolve()
 
+        # 模型优先级：环境变量（QQ_BOT_AGENT_MODEL）> models.json 的 defaultModel
+        # > 不传，让 pi 自己决定。
+        # 这样端点、密钥、模型名可以全写在 pi-config/models.json 里；
+        # 想临时换一个就不改文件，直接设环境变量。
+        self.models_json = resolve_models_json_path(config)
+        from_json, self.models_json_problem = load_models_json(config)
+        self.model = config.agent_model or from_json
+        if config.agent_model and from_json and config.agent_model != from_json:
+            log.info(
+                "QQ_BOT_AGENT_MODEL=%s 覆盖了 %s 里的 defaultModel=%s",
+                config.agent_model, self.models_json, from_json,
+            )
+
+    @property
+    def model_source(self) -> str:
+        """模型是从哪来的（用于启动自检打印）。"""
+        if self.config.agent_model:
+            return "QQ_BOT_AGENT_MODEL"
+        if self.model:
+            return str(self.models_json)
+        return ""
+
     def validate(self) -> list[str]:
         """启动自检：返回一串问题描述，空列表表示一切就绪。
 
@@ -329,6 +431,11 @@ class AgentRunner:
         tools = resolve_passthrough_path(self.config.ebktools_path)
         if not tools.is_file():
             problems.append(f"ebktools.sh 不存在: {tools}")
+
+        # models.json 写错的话 pi 会静默忽略（表现为「配置没生效」），
+        # 容器入口会报，但本地直接跑 run_bot.py 时只靠这里。
+        if self.models_json_problem:
+            problems.append(self.models_json_problem)
         return problems
 
     # ---------------------------------------------------------------- argv
@@ -339,8 +446,8 @@ class AgentRunner:
             argv += ["--session-id", session_id]
         if cfg.agent_tools:
             argv += ["--tools", cfg.agent_tools]
-        if cfg.agent_model:
-            argv += ["--model", cfg.agent_model]
+        if self.model:
+            argv += ["--model", self.model]
         argv += list(cfg.agent_extra_args)
 
         # pi 的用法：pi [options] [--] [@files...] [messages...]

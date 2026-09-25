@@ -177,15 +177,54 @@ docker compose run --rm -e PI_LANGFUSE_DEBUG=true   --entrypoint pi qqbot --prin
 
 > 官方文档：<https://langfuse.com/integrations/developer-tools/pi-agent>
 
-## 模型凭证
+## 模型凭证与端点（全在 pi-config 里）
+
+**推荐：端点、密钥、模型名都写在 `pi-config/models.json` 一个文件里。**
+
+```jsonc
+// pi-config/models.json
+{
+  "defaultModel": "anthropic/claude-sonnet-4-5",
+  "providers": {
+    "anthropic": {
+      "baseUrl": "https://your-relay.example.com",
+      "apiKey": "sk-...",
+    },
+  },
+}
+```
+
+```bash
+chmod 600 pi-config/models.json # 含密钥
+docker compose restart qqbot    # 只需重启，不用重建
+```
+
+`models.json` 是 gitignore 的，密钥不会进仓库。`.env` 里对应的
+`QQ_BOT_AGENT_MODEL` / `*_API_KEY` **全部留空即可**。
+
+### 三个字段分别怎么来的
+
+| 字段 | pi 认不认 | 说明 |
+|---|---|---|
+| `baseUrl` | ✅ 原生 | provider 级覆盖，见下节 |
+| `apiKey` | ✅ 原生 | 支持字面值、`"$ENV_VAR"` 插值、`"!command"` 取 |
+| `defaultModel` | ❌ **本项目约定** | pi 的默认模型在 `settings.json` 里，不在 `models.json` |
+
+第三个是本项目加的：pi 的 `models.json` 只管端点，模型*选择*归
+`<agent-dir>/settings.json` 的 `defaultModel` 管 —— 于是「apiKey 在 .env、
+baseUrl 在 models.json、模型名在 settings.json」要三处填。qqbot 读取
+`models.json` 里 Pi 会忽略的 `defaultModel` 键，作为 `--model` 传给 pi，
+这样三件事就收拢到一个文件。pi 对未知顶层键不作限制（已实测）。
+
+优先级：`QQ_BOT_AGENT_MODEL`（环境变量）> `models.json: defaultModel` > 不传，
+让 pi 自己决定。想临时换个模型、不想改文件时用环境变量。
+
+### 想用环境变量放密钥也行
 
 pi 直接读 provider 的标准环境变量（`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
-`GEMINI_API_KEY` / `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` …），所以只要在
-`.env` 里填一个就行 —— `env_file` 会把它灌进容器。
-
-但**填进 `.env` 并不等于 pi 拿得到**：bot 拉起 pi 时会按白名单过滤环境变量
-（防止 QQ 的 `client_secret` 泄给 agent）。内置白名单见
-`qqbot/config.py` 的 `DEFAULT_AGENT_PASSTHROUGH_ENV`，已经涵盖常见 provider。
+`GEMINI_API_KEY` / …）。但**填进 `.env` 并不等于 pi 拿得到**：bot 拉起 pi 时会按
+白名单过滤环境变量（防止 QQ 的 `client_secret` 泄给 agent），内置白名单见
+`qqbot/config.py` 的 `DEFAULT_AGENT_PASSTHROUGH_ENV`。
 
 | 类别 | 是否透传 | 原因 |
 |---|---|---|
@@ -194,30 +233,20 @@ pi 直接读 provider 的标准环境变量（`ANTHROPIC_API_KEY` / `OPENAI_API_
 | `PI_*`（配置 / 会话目录 / `PI_LANGFUSE_*`） | ✅ | pi 自身与外挂 |
 | `QQ_BOT_*`（含 `client_secret`） | ❌ | 与 agent 无关，绝不外泄 |
 
-用冷门 provider、或想收窄权限，就整套覆盖白名单（**加了前缀就会替换默认值**，
-`EBKTOOL_*` 千万别漏）：
+在 `models.json` 里写 `"apiKey": "$MY_RELAY_KEY"` 时，这个变量名也要在名单内，
+否则报错是 `No API key found`（而不是「变量不存在」），不太好认。自定义名字就
+整套覆盖白名单（**填了就会替换默认值**，`EBKTOOL_*` 千万别漏）：
 
 ```ini
 QQ_BOT_AGENT_PASSTHROUGH_ENV=PATH,HOME,TZ,PI_CODING_AGENT_DIR,PI_CODING_AGENT_SESSION_DIR,EBKTOOL_SERVER_BASEURL,EBKTOOL_TOKEN,MISTRAL_*
 ```
 
-除了环境变量，也可以用 `pi login`（会在容器里写 `auth.json`）—— 但 `auth.json`
-不在挂载范围内，容器重建就丢，不推荐。
-
-## 自定义 LLM 端点（base URL）
+### 自定义 LLM 端点（base URL）
 
 pi **没有** `OPENAI_BASE_URL` 这类通用环境变量（只有 Azure 有 `AZURE_OPENAI_BASE_URL`），
-自定义端点必须走 `<agent-dir>/models.json`。这个部署里它按**文件**挂载自
-`pi-config/models.json`（`scripts/init_config.sh` 已生成一个空配置）：
+自定义端点必须走 `<agent-dir>/models.json`，也就是 `pi-config/models.json`。
 
-```bash
-vi pi-config/models.json        # 改 baseUrl
-chmod 600 pi-config/models.json # 如果要写死密钥
-# .env 里指定走哪个模型
-docker compose restart qqbot    # 只需重启，不用重建
-```
-
-### 推荐写法：只覆盖内置 provider 的 baseUrl
+#### 推荐写法：只覆盖内置 provider 的 baseUrl
 
 最省事的方式 —— 只写 `baseUrl`，**模型 id、上下文长度、是否支持图片全部沿用
 pi 内置目录**，不用一个个重写：
@@ -331,7 +360,7 @@ pi-config/                pi 的配置目录（只挂两个 json 文件）
   models.json               你自己的（gitignore，由 init_config.sh 生成）
   langfuse.json             你自己的，含 secretKey（gitignore，同上）
 
-tests/                    337 项离线测试
+tests/                    357 项离线测试
 docs/QQBOT.md             完整技术文档
 docker/
   entrypoint.sh           容器入口：配置检查 + 兜底安装 pi 扩展
@@ -345,13 +374,13 @@ docker-compose.yml
 
 ## 测试
 
-全部离线（共 337 项），不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
+全部离线（共 357 项），不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
 
 ```bash
 python tests/test_gateway_local.py    #  26  假网关驱动状态机
 python tests/test_event_media.py      #  62  附件解析/真实下载 + 真实抓包回归
 python tests/test_refindex_quote.py   # 102  引用索引/解析/实测相关性
-python tests/test_agent.py            # 128  会话/去重/prompt/子进程/并发/env 透传/清洗
+python tests/test_agent.py            # 148  会话/去重/prompt/子进程/并发/env 透传/models.json/清洗
 python tests/test_run_bot_cli.py      #  19  命令行入口（--check 不连网关、未知参数报错）
 ```
 
@@ -362,6 +391,8 @@ python tests/test_run_bot_cli.py      #  19  命令行入口（--check 不连网
 * `test_refidx_structure` —— REFIDX 的 22+106 结构，防止有人靠「字符串像」做匹配
 * `test_cli / test_check_mode` —— 入口脚本曾经**没有参数解析**，敲错 `--check`
   会被静默忽略并把机器人真的拉起来连 QQ
+* `test_models_json` 里的 `strip_json_comments` 用例 —— 与 pi 的 JS 实现逐例比对
+  （注释/尾随逗号/字符串里的 `//`/转义引号），两边行为必须一致
 
 ---
 
