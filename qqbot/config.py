@@ -19,6 +19,39 @@ SANDBOX_API_BASE = "https://sandbox.api.sgroup.qq.com"
 _TRUTHY = {"1", "true", "yes", "on", "y"}
 
 
+#: agent 进程默认透传的环境变量名。
+#:
+#: 原则：**agent 干活必需的才给，QQ 的凭证一律不给**。
+#:
+#: * 模型凭证是必需的 —— 不给 pi 就没法调 LLM（开箱即坏）
+#: * ``EBKTOOL_*`` 是必需的 —— 不给就调不了 ebktools.sh
+#: * ``PI_*`` 是 pi 自己的配置/会话目录
+#: * ``QQ_BOT_*`` 一律不给（含 client_secret）
+#:
+#: 支持前缀通配（以 ``*`` 结尾）。想收窄或放宽，用
+#: ``QQ_BOT_AGENT_PASSTHROUGH_ENV`` 整套覆盖。
+DEFAULT_AGENT_PASSTHROUGH_ENV: Tuple[str, ...] = (
+    "PATH", "HOME", "LANG", "LC_ALL", "TZ",
+    # pi 的配置与会话目录
+    "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "PI_PACKAGE_DIR",
+    # Langfuse 的 key/baseUrl 读 <agent-dir>/langfuse.json，**不走环境变量**；
+    # 这里只放调试与调参开关（PI_LANGFUSE_DEBUG / PI_LANGFUSE_MAX_CHARS）
+    "PI_LANGFUSE_*",
+    # 模型凭证。取值见 pi 的 docs/providers.md，
+    # 只列「一个环境变量就能认证」的 provider。
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN",
+    "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY",
+    "OPENROUTER_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY",
+    "CEREBRAS_API_KEY", "XAI_API_KEY", "MOONSHOT_API_KEY",
+    "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY", "ZAI_API_KEY",
+    "ZAI_CODING_CN_API_KEY", "NVIDIA_API_KEY", "FIREWORKS_API_KEY",
+    "TOGETHER_API_KEY", "BASETEN_API_KEY", "META_API_KEY", "KIMI_API_KEY",
+    "OPENCODE_API_KEY", "AI_GATEWAY_API_KEY", "HF_TOKEN",
+    # 记账执行层
+    "EBKTOOL_SERVER_BASEURL", "EBKTOOL_TOKEN",
+)
+
+
 def load_env_file(path: str | os.PathLike = ".env", *, override: bool = False) -> None:
     """极简 .env 解析，避免引入 python-dotenv 依赖。
 
@@ -173,18 +206,8 @@ class BotConfig:
     #: 追加任意 CLI 参数（空格分隔，如 "--thinking high"）
     agent_extra_args: Tuple[str, ...] = ()
     #: agent 进程要透传的环境变量名（其余不透传，避免泄露 QQ secret）
-    #: 支持前缀通配（以 * 结尾），例：LANGFUSE_*
-    #: 注意：EBKTOOL_* 必须在这里（build_agent_env 会强保证），否则 agent 调不了 ebktools.sh
-    agent_passthrough_env: Tuple[str, ...] = (
-        "PATH", "HOME", "LANG", "LC_ALL", "TZ",
-        # pi 的配置与会话目录
-        "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "PI_PACKAGE_DIR",
-        # Langfuse 的配置（key/baseUrl）读 <agent-dir>/langfuse.json，**不走环境变量**；
-        # 这里只放调试与调参开关（PI_LANGFUSE_DEBUG / PI_LANGFUSE_MAX_CHARS）
-        "PI_LANGFUSE_*",
-        # 记账执行层
-        "EBKTOOL_SERVER_BASEURL", "EBKTOOL_TOKEN",
-    )
+    #: 支持前缀通配（以 * 结尾），见 DEFAULT_AGENT_PASSTHROUGH_ENV
+    agent_passthrough_env: Tuple[str, ...] = DEFAULT_AGENT_PASSTHROUGH_ENV
 
     extra: dict = field(default_factory=dict)
 
@@ -272,12 +295,7 @@ class BotConfig:
             ),
             agent_passthrough_env=(
                 _env_list("QQ_BOT_AGENT_PASSTHROUGH_ENV")
-                or (
-                    "PATH", "HOME", "LANG", "LC_ALL", "TZ",
-                    "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "PI_PACKAGE_DIR",
-                    "PI_LANGFUSE_*",
-                    "EBKTOOL_SERVER_BASEURL", "EBKTOOL_TOKEN",
-                )
+                or DEFAULT_AGENT_PASSTHROUGH_ENV
             ),
         )
         params.update({k: v for k, v in overrides.items() if v is not None})

@@ -170,6 +170,33 @@ docker compose run --rm -e PI_LANGFUSE_DEBUG=true   --entrypoint pi qqbot --prin
 
 > 官方文档：<https://langfuse.com/integrations/developer-tools/pi-agent>
 
+## 模型凭证
+
+pi 直接读 provider 的标准环境变量（`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+`GEMINI_API_KEY` / `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` …），所以只要在
+`.env` 里填一个就行 —— `env_file` 会把它灌进容器。
+
+但**填进 `.env` 并不等于 pi 拿得到**：bot 拉起 pi 时会按白名单过滤环境变量
+（防止 QQ 的 `client_secret` 泄给 agent）。内置白名单见
+`qqbot/config.py` 的 `DEFAULT_AGENT_PASSTHROUGH_ENV`，已经涵盖常见 provider。
+
+| 类别 | 是否透传 | 原因 |
+|---|---|---|
+| 常见 provider 的 `*_API_KEY` | ✅ | 不给 pi 就没法调模型 |
+| `EBKTOOL_SERVER_BASEURL` / `EBKTOOL_TOKEN` | ✅ | `ebktools.sh` 必需 |
+| `PI_*`（配置 / 会话目录 / `PI_LANGFUSE_*`） | ✅ | pi 自身与外挂 |
+| `QQ_BOT_*`（含 `client_secret`） | ❌ | 与 agent 无关，绝不外泄 |
+
+用冷门 provider、或想收窄权限，就整套覆盖白名单（**加了前缀就会替换默认值**，
+`EBKTOOL_*` 千万别漏）：
+
+```ini
+QQ_BOT_AGENT_PASSTHROUGH_ENV=PATH,HOME,TZ,PI_CODING_AGENT_DIR,PI_CODING_AGENT_SESSION_DIR,EBKTOOL_SERVER_BASEURL,EBKTOOL_TOKEN,MISTRAL_*
+```
+
+除了环境变量，也可以用 `pi login`（会在容器里写 `auth.json`）—— 但 `auth.json`
+不在挂载范围内，容器重建就丢，不推荐。
+
 ## 自定义 LLM 端点（base URL）
 
 pi **没有** `OPENAI_BASE_URL` 这类通用环境变量（只有 Azure 有 `AZURE_OPENAI_BASE_URL`），
@@ -211,7 +238,7 @@ QQ_BOT_AGENT_MODEL=my-proxy/gpt-4o
   所以密钥不用写进 `models.json`。
 * **自定义的 key 变量名要进白名单**，否则不会到 pi 进程：
   `QQ_BOT_AGENT_PASSTHROUGH_ENV=PATH,HOME,TZ,EBKTOOL_*,MY_PROXY_*`
-  （注意这样会覆盖内置默认值，`EBKTOOL_*` 千万别漏）。
+  （注意这样会覆盖内置默认值，`EBKTOOL_*` 和模型凭证都别漏）。
 * **看图入账必须声明 `"input": ["text", "image"]`**，否则模型不会被标记为支持图片，
   OCR 流程会失效。
 * `api` 取值：`openai-completions`、`openai-responses`、`anthropic-messages`、

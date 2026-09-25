@@ -37,7 +37,7 @@ from qqbot.agent import (  # noqa: E402
     parse_event_time,
 )
 from qqbot.bot import Event, QQBot, sanitize_reply  # noqa: E402
-from qqbot.config import BotConfig  # noqa: E402
+from qqbot.config import DEFAULT_AGENT_PASSTHROUGH_ENV, BotConfig  # noqa: E402
 from qqbot.quote import ResolvedQuote  # noqa: E402
 from qqbot.refindex import RefAttachment  # noqa: E402
 
@@ -353,6 +353,40 @@ def test_agent_env(tmp: Path) -> None:
           not any(e == "LANGFUSE_*" for e in default.agent_passthrough_env),
           repr(default.agent_passthrough_env))
     check("默认含 PI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR" in default.agent_passthrough_env)
+
+    # --- 模型凭证：agent 必须拿到，否则 pi 无法认证（开箱即坏）---
+    creds = {
+        "ANTHROPIC_API_KEY": "sk-ant-1",
+        "OPENAI_API_KEY": "sk-1",
+        "GEMINI_API_KEY": "g-1",
+        "OPENROUTER_API_KEY": "or-1",
+        "DEEPSEEK_API_KEY": "ds-1",
+        "EBKTOOL_TOKEN": "tok",
+        "QQ_BOT_CLIENT_SECRET": "SHOULD-NOT-LEAK",
+        "QQ_BOT_APP_ID": "SHOULD-NOT-LEAK",
+    }
+    env4 = build_agent_env(default, creds)
+    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+                 "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
+        check(f"默认透传模型凭证 {name}", env4.get(name) == creds[name], repr(env4))
+    check("透传模型凭证的同时仍隔离 QQ secret",
+          "QQ_BOT_CLIENT_SECRET" not in env4 and "QQ_BOT_APP_ID" not in env4, repr(env4))
+
+    # 白名单默认值只应有一份定义（曾经 dataclass 与 from_env 各一份，易改漏）
+    check("dataclass 默认就是共用常量",
+          default.agent_passthrough_env == DEFAULT_AGENT_PASSTHROUGH_ENV)
+    envfile = tmp / "envfile.env"
+    envfile.write_text(
+        "QQ_BOT_APP_ID=1\nQQ_BOT_CLIENT_SECRET=s\n", encoding="utf-8")
+    from_file = BotConfig.from_env(str(envfile))
+    check("from_env 的兜底与 dataclass 默认一致",
+          from_file.agent_passthrough_env == DEFAULT_AGENT_PASSTHROUGH_ENV,
+          repr(from_file.agent_passthrough_env))
+    check("QQ_BOT_AGENT_PASSTHROUGH_ENV 能整套覆盖",
+          BotConfig.from_env(
+              str(envfile),
+              agent_passthrough_env=("PATH",),
+          ).agent_passthrough_env == ("PATH",))
 
 
 def test_build_argv(tmp: Path) -> None:
