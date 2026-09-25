@@ -199,9 +199,8 @@ class BotConfig:
     agent_tools: str = "bash,read"
     #: 单次 agent 超时（秒）
     agent_timeout: float = 120.0
-    #: pi 的 models.json 路径；空 = 按 pi 的规则推到 <agent-dir>/models.json。
-    #: 端点、密钥、模型名都写在那一个文件里（单一来源，见 README）。
-    agent_models_json: Optional[str] = None
+    #: 注：模型名与端点（含密钥）在 pi 的 <agent-dir>/models.json 里，
+    #: 路径由 PI_CODING_AGENT_DIR 决定，不在这里配（单一来源）。
     #: 全局并发上限（同时跑几个 agent）
     agent_max_concurrency: int = 2
     #: 追加任意 CLI 参数（空格分隔，如 "--thinking high"）
@@ -289,7 +288,6 @@ class BotConfig:
             or ".agents/skills/ezbookkeeping/scripts/ebktools.sh",
             agent_tools=_env("QQ_BOT_AGENT_TOOLS") or "bash,read",
             agent_timeout=float(_env_int("QQ_BOT_AGENT_TIMEOUT", default=120)),
-            agent_models_json=_env_opt_str("QQ_BOT_AGENT_MODELS_JSON"),
             agent_max_concurrency=_env_int("QQ_BOT_AGENT_MAX_CONCURRENCY", default=2),
             agent_extra_args=tuple(
                 part for part in (_env("QQ_BOT_AGENT_EXTRA_ARGS") or "").split() if part

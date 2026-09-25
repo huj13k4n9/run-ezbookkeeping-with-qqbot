@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import stat
 import sys
@@ -406,65 +407,95 @@ def test_models_json(tmp: Path) -> None:
         got = strip_json_comments(src)
         check(f"strip_json_comments {src!r}", got == want, f"got={got!r} want={want!r}")
 
-    # --- 模型解析优先级 ---
-    def cfg_with(tmp_name: str, body: str | None, **kw) -> BotConfig:
-        base = tmp / tmp_name
-        ws = base / "ws"
-        ws.mkdir(parents=True, exist_ok=True)
-        (ws / "AGENTS.md").write_text("# t\n", encoding="utf-8")
-        mj = base / "models.json"
+    # --- 模型只有一个来源：<agent-dir>/models.json ---
+    # 路径不对外配，就是 pi 的规则 $PI_CODING_AGENT_DIR/models.json。
+    # 所以测试也走真路径（改环境变量），而不是塞个参数进去。
+    @contextlib.contextmanager
+    def agent_dir(name: str, body: Optional[str]):
+        d = tmp / f"ad-{name}"
+        d.mkdir(parents=True, exist_ok=True)
         if body is not None:
-            mj.write_text(body, encoding="utf-8")
-        return make_config(base, agent_models_json=str(mj), **kw)
+            (d / "models.json").write_text(body, encoding="utf-8")
+        saved = os.environ.get("PI_CODING_AGENT_DIR")
+        os.environ["PI_CODING_AGENT_DIR"] = str(d)
+        try:
+            yield d
+        finally:
+            if saved is None:
+                os.environ.pop("PI_CODING_AGENT_DIR", None)
+            else:
+                os.environ["PI_CODING_AGENT_DIR"] = saved
+
+    def ws_cfg(name: str) -> BotConfig:
+        return make_config(tmp / f"cfg-{name}")
+
+    one_json = "\n".join([
+        "{",
+        "  // 端点、密钥、模型名全在这",
+        '  "defaultModel": "my-relay/gpt-4o",',
+        '  "providers": { "my-relay": { "baseUrl": "http://x", "apiKey": "sk-1", }, },',
+        "}",
+    ])
 
     # 端点 + 密钥 + 模型名写在一个文件里：不再需要任何环境变量
-    one_file = cfg_with(
-        "one",
-        '{\n  // 端点、密钥、模型名全在这\n  "defaultModel": "my-relay/gpt-4o",\n'
-        '  "providers": { "my-relay": { "baseUrl": "http://x", "apiKey": "sk-1", }, },\n}',
-    )
-    runner = AgentRunner(one_file)
-    check("从 models.json 读出 defaultModel", runner.model == "my-relay/gpt-4o", repr(runner.model))
-    argv = runner.build_argv("s", "hi", [])
-    check("defaultModel 进了 --model", "--model" in argv and argv[argv.index("--model") + 1] == "my-relay/gpt-4o", repr(argv))
-    check("来源标记指向文件", runner.model_source.endswith("models.json"), runner.model_source)
+    with agent_dir("one", one_json) as adir:
+        one_file = ws_cfg("one")
+        runner = AgentRunner(one_file)
+        check("从 models.json 读出 defaultModel", runner.model == "my-relay/gpt-4o", repr(runner.model))
+        argv = runner.build_argv("s", "hi", [])
+        check("defaultModel 进了 --model",
+              "--model" in argv and argv[argv.index("--model") + 1] == "my-relay/gpt-4o", repr(argv))
+        check("来源标记指向文件", Path(runner.model_source) == adir / "models.json", runner.model_source)
 
-    # 模型名是**单一来源**：只认 models.json 的 defaultModel。
-    # 回归护栏：BotConfig 不该再有 agent_model 字段（曾经也有过环境变量）。
-    check("BotConfig 没有 agent_model 字段", not hasattr(one_file, "agent_model"),
-          repr([f for f in one_file.__dataclass_fields__ if "model" in f]))
+        # 回归护栏：模型名是单一来源，BotConfig 不该再有相关的可配字段
+        check("BotConfig 没有 agent_model 字段", not hasattr(one_file, "agent_model"),
+              repr([f for f in one_file.__dataclass_fields__ if "model" in f]))
+        check("BotConfig 没有 agent_models_json 字段", not hasattr(one_file, "agent_models_json"),
+              repr([f for f in one_file.__dataclass_fields__ if "model" in f]))
+
+        value, problem = load_models_json()
+        check("load_models_json 返回元组", value == "my-relay/gpt-4o" and problem is None,
+              f"{value!r} {problem!r}")
 
     # 没有这个键 / 文件不存在 = 不传 --model，让 pi 自己决定
-    for label, body in (("没有 defaultModel", '{"providers": {}}'), ("文件不存在", None)):
-        runner_plain = AgentRunner(cfg_with("nokey", body))
-        check(f"{label} 时不传 --model", "--model" not in runner_plain.build_argv("s", "p", []))
-        check(f"{label} 时无问题", not runner_plain.models_json_problem, repr(runner_plain.models_json_problem))
-        check(f"{label} 时来源为空", runner_plain.model_source == "", repr(runner_plain.model_source))
+    for label, body in (("没有defaultModel", '{"providers": {}}'), ("文件不存在", None)):
+        with agent_dir(f"nokey-{label}", body):
+            runner_plain = AgentRunner(ws_cfg(f"nokey-{label}"))
+            check(f"[{label}] 不传 --model", "--model" not in runner_plain.build_argv("s", "p", []))
+            check(f"[{label}] 无问题", not runner_plain.models_json_problem,
+                  repr(runner_plain.models_json_problem))
+            check(f"[{label}] 来源为空", runner_plain.model_source == "", repr(runner_plain.model_source))
 
     # 解析失败的要将问题报到启动自检里（pi 自己会静默忽略）
-    broken = cfg_with("broken", '{\n  /* 块注释 pi 不认 */\n  "providers": {}\n}')
-    runner_broken = AgentRunner(broken)
-    check("坏 models.json 不抛异常", runner_broken.model is None)
-    check("坏 models.json 有说明", bool(runner_broken.models_json_problem), repr(runner_broken.models_json_problem))
-    check("坏 models.json 进 validate()",
-          any("解析失败" in p for p in runner_broken.validate()), repr(runner_broken.validate()))
+    with agent_dir("broken", "\n".join([
+        "{",
+        "  /* 块注释 pi 不认 */",
+        '  "providers": {}',
+        "}",
+    ])):
+        runner_broken = AgentRunner(ws_cfg("broken"))
+        check("坏 models.json 不抛异常", runner_broken.model is None)
+        check("坏 models.json 有说明", bool(runner_broken.models_json_problem),
+              repr(runner_broken.models_json_problem))
+        check("坏 models.json 进 validate()",
+              any("解析失败" in x for x in runner_broken.validate()), repr(runner_broken.validate()))
 
     # defaultModel 类型不对也不能当模型用
-    wrong_type = AgentRunner(cfg_with("badtype", '{"defaultModel": 123}'))
-    check("defaultModel 不是字符串则忽略", wrong_type.model is None, repr(wrong_type.model))
-    check("defaultModel 类型不对有说明", bool(wrong_type.models_json_problem))
-
-    # load_models_json 是纯函数，直接测一下返回形状
-    value, problem = load_models_json(one_file)
-    check("load_models_json 返回元组", value == "my-relay/gpt-4o" and problem is None, f"{value!r} {problem!r}")
+    with agent_dir("badtype", '{"defaultModel": 123}'):
+        wrong_type = AgentRunner(ws_cfg("badtype"))
+        check("defaultModel 不是字符串则忽略", wrong_type.model is None, repr(wrong_type.model))
+        check("defaultModel 类型不对有说明", bool(wrong_type.models_json_problem))
 
 
 def test_build_argv(tmp: Path) -> None:
     print("\n[用例5] AgentRunner.build_argv")
-    # 模型只有一个来源：models.json
-    mj = tmp / "argv-models.json"
-    mj.write_text('{"defaultModel": "multimodal:high"}', encoding="utf-8")
-    cfg = make_config(tmp, agent_models_json=str(mj), agent_extra_args=("--thinking", "high"))
+    # 模型只有一个来源：<agent-dir>/models.json（路径跟 PI_CODING_AGENT_DIR 走）
+    ad = tmp / "argv-agent-dir"
+    ad.mkdir(parents=True, exist_ok=True)
+    (ad / "models.json").write_text('{"defaultModel": "multimodal:high"}', encoding="utf-8")
+    saved_pcad = os.environ.get("PI_CODING_AGENT_DIR")
+    os.environ["PI_CODING_AGENT_DIR"] = str(ad)
+    cfg = make_config(tmp, agent_extra_args=("--thinking", "high"))
     runner = AgentRunner(cfg)
     argv = runner.build_argv("qq-abc-20260923", "hello", ["/a.jpg", "/b.png"])
     check("以命令开头", argv[0] == cfg.agent_command, argv[0])
@@ -476,6 +507,12 @@ def test_build_argv(tmp: Path) -> None:
     check("-- 在 @文件 之前", argv.index("--") < argv.index("@/a.jpg"), repr(argv))
     check("@ 文件排在消息之前", argv.index("@/b.png") < argv.index("hello"), repr(argv))
     check("消息是最后一个参数", argv[-1] == "hello")
+
+    # 还原环境
+    if saved_pcad is None:
+        os.environ.pop("PI_CODING_AGENT_DIR", None)
+    else:
+        os.environ["PI_CODING_AGENT_DIR"] = saved_pcad
 
     no_session = AgentRunner(make_config(tmp)).build_argv("", "hi", [])
     check("无 session 时不带该参数", "--session-id" not in no_session, repr(no_session))

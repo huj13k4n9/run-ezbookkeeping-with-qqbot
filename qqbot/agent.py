@@ -65,20 +65,18 @@ def strip_json_comments(text: str) -> str:
     return _JSON_STR_OR_TRAILING_COMMA.sub(drop_trailing_comma, text)
 
 
-def resolve_models_json_path(config) -> Path:  # noqa: ANN001
+def resolve_models_json_path() -> Path:
     """定位 pi 的 models.json。
 
-    优先用显式配置（``QQ_BOT_AGENT_MODELS_JSON``），否则按 pi 的规则：
+    没有可配的路径 —— 就是 pi 自己的规则：
     ``$PI_CODING_AGENT_DIR/models.json``（默认 ``~/.pi/agent/models.json``）。
+    容器里 ``PI_CODING_AGENT_DIR=/app/pi-config``。
     """
-    explicit = getattr(config, "agent_models_json", None)
-    if explicit:
-        return Path(explicit).expanduser()
     agent_dir = os.environ.get("PI_CODING_AGENT_DIR") or "~/.pi/agent"
     return Path(agent_dir).expanduser() / "models.json"
 
 
-def load_models_json(config) -> tuple[Optional[str], Optional[str]]:  # noqa: ANN001
+def load_models_json() -> tuple[Optional[str], Optional[str]]:
     """读 models.json，返回 ``(defaultModel, 问题描述)``。
 
     为什么自己读这个键：pi 的默认模型在 ``settings.json`` 里，而
@@ -89,7 +87,7 @@ def load_models_json(config) -> tuple[Optional[str], Optional[str]]:  # noqa: AN
     pi 对未知顶层键不作限制（已实测），所以多加这个键不影响 pi 自己。
     文件不存在 = 正常情况，不算问题。
     """
-    path = resolve_models_json_path(config)
+    path = resolve_models_json_path()
     try:
         raw = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
@@ -397,8 +395,8 @@ class AgentRunner:
 
         # 模型只有一个来源：models.json 的 defaultModel（见 README）。
         # 环境变量不再参与 —— 单一来源比“哪边优先”好推理。
-        self.models_json = resolve_models_json_path(config)
-        self.model, self.models_json_problem = load_models_json(config)
+        self.models_json = resolve_models_json_path()
+        self.model, self.models_json_problem = load_models_json()
 
     @property
     def model_source(self) -> str:
