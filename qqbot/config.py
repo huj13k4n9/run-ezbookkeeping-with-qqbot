@@ -245,27 +245,11 @@ class BotConfig:
     def gateway_url(self) -> str:
         return f"{self.api_base}/gateway"
 
-    #: 已删除的配置项。留着会**静默失效**（最难查的一类问题），
-    #: 所以只要环境里有就吱一声。
-    REMOVED_ENV: ClassVar[tuple[tuple[str, str], ...]] = (
-        (
-            "QQ_BOT_AGENT_MODEL",
-            "模型名改成单一来源了：写进 pi-config/models.json 的 defaultModel"
-            "（连同 baseUrl / apiKey 一起，不用再两头填）",
-        ),
-    )
-
     @classmethod
     def from_env(cls, env_file: str | os.PathLike | None = ".env", **overrides) -> "BotConfig":
         """从环境变量（可配合 .env）构造配置。"""
         if env_file:
             load_env_file(env_file)
-
-        for name, instead in cls.REMOVED_ENV:
-            if os.environ.get(name):
-                logging.getLogger("qqbot.config").warning(
-                    "%s 已不再生效，请从 .env 里删掉 —— %s", name, instead
-                )
 
         sandbox = _env_bool("QQ_BOT_SANDBOX", False)
         shard_id = _env_int("QQ_BOT_SHARD_ID", default=0)

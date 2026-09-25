@@ -361,7 +361,7 @@ pi-config/                pi 的配置目录（只挂两个 json 文件）
   models.json               你自己的（gitignore，由 init_config.sh 生成）
   langfuse.json             你自己的，含 secretKey（gitignore，同上）
 
-tests/                    359 项离线测试
+tests/                    358 项离线测试
 docs/QQBOT.md             完整技术文档
 docker/
   entrypoint.sh           容器入口：配置检查 + 兜底安装 pi 扩展
@@ -375,13 +375,13 @@ docker-compose.yml
 
 ## 测试
 
-全部离线（共 359 项），不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
+全部离线（共 358 项），不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
 
 ```bash
 python tests/test_gateway_local.py    #  26  假网关驱动状态机
 python tests/test_event_media.py      #  62  附件解析/真实下载 + 真实抓包回归
 python tests/test_refindex_quote.py   # 102  引用索引/解析/实测相关性
-python tests/test_agent.py            # 150  会话/去重/prompt/子进程/并发/env 透传/models.json/清洗
+python tests/test_agent.py            # 149  会话/去重/prompt/子进程/并发/env 透传/models.json/清洗
 python tests/test_run_bot_cli.py      #  19  命令行入口（--check 不连网关、未知参数报错）
 ```
 

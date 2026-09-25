@@ -429,13 +429,10 @@ def test_models_json(tmp: Path) -> None:
     check("defaultModel 进了 --model", "--model" in argv and argv[argv.index("--model") + 1] == "my-relay/gpt-4o", repr(argv))
     check("来源标记指向文件", runner.model_source.endswith("models.json"), runner.model_source)
 
-    # 模型名是**单一来源**：只认 models.json。环境变量不再参与，
-    # 且 QQ_BOT_AGENT_MODEL 已被删掉 —— 留着它必须能被察觉，不能静默失效。
+    # 模型名是**单一来源**：只认 models.json 的 defaultModel。
+    # 回归护栏：BotConfig 不该再有 agent_model 字段（曾经也有过环境变量）。
     check("BotConfig 没有 agent_model 字段", not hasattr(one_file, "agent_model"),
           repr([f for f in one_file.__dataclass_fields__ if "model" in f]))
-    check("被删的变量在 REMOVED_ENV 里",
-          any(n == "QQ_BOT_AGENT_MODEL" for n, _ in BotConfig.REMOVED_ENV),
-          repr(BotConfig.REMOVED_ENV))
 
     # 没有这个键 / 文件不存在 = 不传 --model，让 pi 自己决定
     for label, body in (("没有 defaultModel", '{"providers": {}}'), ("文件不存在", None)):
