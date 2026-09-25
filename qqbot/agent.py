@@ -70,7 +70,7 @@ def resolve_models_json_path() -> Path:
 
     没有可配的路径 —— 就是 pi 自己的规则：
     ``$PI_CODING_AGENT_DIR/models.json``（默认 ``~/.pi/agent/models.json``）。
-    容器里 ``PI_CODING_AGENT_DIR=/app/pi-config``。
+    容器里 ``PI_CODING_AGENT_DIR=/app/config``。
     """
     agent_dir = os.environ.get("PI_CODING_AGENT_DIR") or "~/.pi/agent"
     return Path(agent_dir).expanduser() / "models.json"

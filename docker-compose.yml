@@ -30,7 +30,7 @@ services:
 
     # .env 里的所有变量都会注入容器。
     # 注意：Langfuse 的 key/baseUrl **不在环境变量里**，而是放在
-    # pi-config/langfuse.json（见那个目录下的 .example）—— 那个目录烤在镜像里，
+    # config/langfuse.json（见那个目录下的 .example）—— 那个目录烤在镜像里，
     # 改了要 docker compose up -d --build。
     env_file:
       - .env
@@ -48,7 +48,7 @@ services:
 
       # pi 的配置目录。目录本身在镜像里（含构建期预装的扩展声明），
       # 只有 models.json / langfuse.json 两个文件从宿主机挂进来。
-      PI_CODING_AGENT_DIR: /app/pi-config
+      PI_CODING_AGENT_DIR: /app/config
       # 会话是运行期数据，放 data/ 里
       PI_CODING_AGENT_SESSION_DIR: /app/data/pi-sessions
       # 入口脚本会幂等安装这里的 pi 扩展包；留空则跳过
@@ -68,10 +68,10 @@ services:
       #
       # ⚠️ 宿主机上这两个文件**必须先存在**。否则 Docker 会建一个同名目录
       #    挂进来，pi 解析 JSON 会失败（入口脚本会检测并报错）。
-      #       cp pi-config/models.json.example   pi-config/models.json
-      #       cp pi-config/langfuse.json.example pi-config/langfuse.json
-      - ./pi-config/models.json:/app/pi-config/models.json:ro
-      - ./pi-config/langfuse.json:/app/pi-config/langfuse.json:ro
+      #       cp config/models.json.example   config/models.json
+      #       cp config/langfuse.json.example config/langfuse.json
+      - ./config/models.json:/app/config/models.json:ro
+      - ./config/langfuse.json:/app/config/langfuse.json:ro
 
       # 约束文件 / 官方工具脚本 / skill：只读挂载，改完不用重建镜像。
       # 这些目录不在本仓库下时，在 .env 里设 AGENT_DIR / AGENTS_SKILLS_DIR。

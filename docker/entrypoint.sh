@@ -28,8 +28,8 @@ for f in "$AGENT_DIR/models.json" "$AGENT_DIR/langfuse.json"; do
         printf '[entrypoint] %s 是个目录，不是文件。\n' "$f"
         printf '[entrypoint] 原因：宿主机上缺这个文件，Docker 自动建了目录。\n'
         printf '[entrypoint] 修复：\n'
-        printf '  rm -rf pi-config/%s\n' "$name"
-        printf '  cp pi-config/%s.example pi-config/%s\n' "$name" "$name"
+        printf '  rm -rf config/%s\n' "$name"
+        printf '  cp config/%s.example config/%s\n' "$name" "$name"
         printf '[entrypoint] =====================\n\n'
     fi
 done

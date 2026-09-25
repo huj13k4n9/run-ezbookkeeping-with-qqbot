@@ -85,9 +85,10 @@ cd run-ezbookkeeping-with-qqbot
 cp .env.example .env
 #  ├─ QQ_BOT_APP_ID / QQ_BOT_CLIENT_SECRET     （QQ 开放平台 → 开发设置）
 #  ├─ EBKTOOL_SERVER_BASEURL / EBKTOOL_TOKEN   （ezBookkeeping → 设置 → 令牌）
-#  └─ 模型端点 / key / 模型名                    （都写进 pi-config/models.json）
+#  └─ 模型端点 / key / 模型名                    （都写进 config/models.json）
 
-sh scripts/init_config.sh                     # 生成 pi-config/ 下的两个配置文件
+cp config/models.json.example config/models.json
+cp config/langfuse.json.example config/langfuse.json
 mkdir -p data && sudo chown -R 10001:10001 data
 #  ↑ 容器以 uid 10001 运行，绑定挂载的 data/ 必须先改属主
 docker compose up -d --build
@@ -126,13 +127,12 @@ python scripts/run_bot.py
 **配置走文件，不走环境变量** —— 和 pi 的 `models.json` 一样，放进 pi 的配置目录：
 
 ```bash
-# scripts/init_config.sh 已经生成过一个空配置，直接改它
-vi pi-config/langfuse.json      # 填 publicKey / secretKey，按 key 区域改 baseUrl
-chmod 600 pi-config/langfuse.json
+vi config/langfuse.json      # 填 publicKey / secretKey，按 key 区域改 baseUrl
+chmod 600 config/langfuse.json
 docker compose restart qqbot    # 改配置只需重启，不用重建
 ```
 
-完整的字段说明见 `pi-config/langfuse.json.example`。
+完整的字段说明见 `config/langfuse.json.example`。
 
 `baseUrl` 的区域必须和 key 对应（省略则默认 EU）：
 
@@ -157,12 +157,12 @@ qqbot 的白名单里**只保留 `PI_LANGFUSE_*`**（`PI_LANGFUSE_DEBUG` 调试�
 * `settings.json` / `auth.json` / 预装的扩展包留在容器与镜像里，不污染仓库
 
 **唯一的坑**：宿主机上这两个文件必须**先存在**。否则 Docker 会建一个同名
-*目录*挂进来，pi 解析 JSON 失败。`scripts/init_config.sh` 负责生成它们，
+*目录*挂进来，pi 解析 JSON 失败。需要将 example 配置复制为对应的 JSON 文件，
 容器入口脚本也会在启动时检测并报出明确错误。
 
-扩展由容器入口脚本幂等安装（`PI_EXTENSIONS`），装在镜像内的 `pi-config/` 里。
+扩展由容器入口脚本幂等安装（`PI_EXTENSIONS`），装在镜像内的 `config/` 里。
 
-**想关掉追踪**：把 `pi-config/langfuse.json` 删掉或改名即可。
+**想关掉追踪**：把 `config/langfuse.json` 删掉或改名即可。
 （插件还有个只认环境变量的 kill switch `LANGFUSE_TRACING_ENABLED=false`，
 但既然配置已经走文件，用文件开关就够了。）
 
@@ -177,12 +177,12 @@ docker compose run --rm -e PI_LANGFUSE_DEBUG=true   --entrypoint pi qqbot --prin
 
 > 官方文档：<https://langfuse.com/integrations/developer-tools/pi-agent>
 
-## 模型凭证与端点（全在 pi-config 里）
+## 模型凭证与端点（全在 config 里）
 
-**推荐：端点、密钥、模型名都写在 `pi-config/models.json` 一个文件里。**
+**推荐：端点、密钥、模型名都写在 `config/models.json` 一个文件里。**
 
 ```jsonc
-// pi-config/models.json
+// config/models.json
 {
   "defaultModel": "anthropic/claude-sonnet-4-5",
   "providers": {
@@ -195,7 +195,7 @@ docker compose run --rm -e PI_LANGFUSE_DEBUG=true   --entrypoint pi qqbot --prin
 ```
 
 ```bash
-chmod 600 pi-config/models.json # 含密钥
+chmod 600 config/models.json # 含密钥
 docker compose restart qqbot    # 只需重启，不用重建
 ```
 
@@ -203,7 +203,7 @@ docker compose restart qqbot    # 只需重启，不用重建
 `*_API_KEY` **全部留空即可**；模型名和端点也**只在 `models.json` 里**（单一来源）。
 
 路径没有可配项 —— 就是 pi 的规则 `<agent-dir>/models.json`，而 agent dir 由
-`PI_CODING_AGENT_DIR` 决定（容器里是 `/app/pi-config`）。
+`PI_CODING_AGENT_DIR` 决定（容器里是 `/app/config`）。
 
 ### 三个字段分别怎么来的
 
@@ -248,7 +248,7 @@ QQ_BOT_AGENT_PASSTHROUGH_ENV=PATH,HOME,TZ,PI_CODING_AGENT_DIR,PI_CODING_AGENT_SE
 ### 自定义 LLM 端点（base URL）
 
 pi **没有** `OPENAI_BASE_URL` 这类通用环境变量（只有 Azure 有 `AZURE_OPENAI_BASE_URL`），
-自定义端点必须走 `<agent-dir>/models.json`，也就是 `pi-config/models.json`。
+自定义端点必须走 `<agent-dir>/models.json`，也就是 `config/models.json`。
 
 #### 推荐写法：只覆盖内置 provider 的 baseUrl
 
@@ -266,7 +266,7 @@ pi 内置目录**，不用一个个重写：
 配套 `.env`：
 
 ```jsonc
-// pi-config/models.json
+// config/models.json
 { "defaultModel": "anthropic/claude-sonnet-4-5" }
 ```
 
@@ -308,7 +308,7 @@ pi 不认识的端点（Ollama / LM Studio / vLLM，或协议不标准的中转�
 ```
 
 ```jsonc
-// pi-config/models.json —— defaultModel 已经在上面场景 A 里写过了
+// config/models.json —— defaultModel 已经在上面场景 A 里写过了
 // .env 里只需要给密钥（如果用 $插值 的话）
 ```
 
@@ -333,7 +333,7 @@ pi 不认识的端点（Ollama / LM Studio / vLLM，或协议不标准的中转�
   `bedrock-converse-stream`、`openai-codex-responses`、`pi-messages`。
 * 改完 `models.json` / `langfuse.json` 只需 `docker compose restart qqbot`。
 
-完整模板见 `pi-config/models.json.example`。
+完整模板见 `config/models.json.example`。
 
 ## 目录结构
 
@@ -358,18 +358,17 @@ scripts/
   run_bot.py              常驻服务入口
   qqbot_test.py           命令行测试工具（鉴权/网关/订阅/发消息）
 
-pi-config/                pi 的配置目录（只挂两个 json 文件）
+config/                pi 的配置目录（只挂两个 json 文件）
   models.json.example       自定义 LLM 端点模板
   langfuse.json.example     Langfuse 凭证模板
-  models.json               你自己的（gitignore，由 init_config.sh 生成）
-  langfuse.json             你自己的，含 secretKey（gitignore，同上）
+  models.json               你自己的（gitignore）
+  langfuse.json             你自己的，含 secretKey（gitignore）
 
 tests/                    359 项离线测试
 docs/QQBOT.md             完整技术文档
 docker/
   entrypoint.sh           容器入口：配置检查 + 兜底安装 pi 扩展
   check_pi_json.js        用 pi 的规则预验 models.json / langfuse.json
-scripts/init_config.sh    生成 pi-config/ 下的两个配置文件
 Dockerfile
 docker-compose.yml
 ```

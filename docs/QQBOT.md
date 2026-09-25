@@ -600,7 +600,7 @@ EBKTOOL_SERVER_BASEURL EBKTOOL_TOKEN
 ```
 
 > Langfuse 的 **key / baseUrl 不走环境变量**，放在 `<agent-dir>/langfuse.json`
-> （容器里是 `pi-config/langfuse.json`）。白名单里只留 `PI_LANGFUSE_*`
+> （容器里是 `config/langfuse.json`）。白名单里只留 `PI_LANGFUSE_*`
 > 这类调试与调参开关。
 
 用 `QQ_BOT_AGENT_PASSTHROUGH_ENV` 覆盖时是**整体替换**，注意别漏掉 `EBKTOOL_*`
@@ -666,7 +666,7 @@ Alpine 有两个坑：musl libc 对 Node 生态的兼容风险，以及 `jq`/`ri
 cp .env.example .env
 #  填 QQ_BOT_APP_ID / QQ_BOT_CLIENT_SECRET
 #  填 EBKTOOL_SERVER_BASEURL / EBKTOOL_TOKEN
-#  模型端点 / key / 模型名 → 写进 pi-config/models.json（单一来源）
+#  模型端点 / key / 模型名 → 写进 config/models.json（单一来源）
 #    { "defaultModel": "anthropic/claude-sonnet-4-5",
 #      "providers": { "anthropic": { "baseUrl": "…", "apiKey": "…" } } }
 

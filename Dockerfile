@@ -61,7 +61,7 @@ COPY docker/check_pi_json.js /usr/local/bin/check-pi-json.js
 # compose 里虽然会把 PI_CODING_AGENT_DIR 指到挂载目录，
 # 但没设那个变量时 pi 会回到 ~/.pi/agent，先建好更稳。
 RUN useradd --create-home --uid 10001 qqbot \
- && mkdir -p /home/qqbot/.pi/agent /app/data /app/agent /app/pi-config \
+ && mkdir -p /home/qqbot/.pi/agent /app/data /app/agent /app/config \
  && chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/check-pi-json.js \
  && chown -R qqbot:qqbot /home/qqbot /app
 
@@ -73,7 +73,7 @@ USER qqbot
 # 入口脚本仍会做幂等兜底（镜像外追加的扩展、或这一层被清理时）。
 ARG PI_EXTENSIONS="npm:@langfuse/pi-observability-plugin"
 RUN for src in ${PI_EXTENSIONS}; do \
-      PI_CODING_AGENT_DIR=/app/pi-config pi install "$src" \
+      PI_CODING_AGENT_DIR=/app/config pi install "$src" \
       || echo "[build] 警告: $src 预装失败（离线？），改为启动时安装"; \
     done
 

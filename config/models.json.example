@@ -1,0 +1,13 @@
+{
+  "defaultModel": "anthropic/claude-sonnet-4-5",
+  "providers": {
+    "anthropic": {
+      "baseUrl": "https://your-relay.example.com",
+      "apiKey": "sk-..."
+    },
+    "openai": {
+      "baseUrl": "https://your-relay.example.com/openai",
+      "apiKey": "sk-..."
+    }
+  }
+}
