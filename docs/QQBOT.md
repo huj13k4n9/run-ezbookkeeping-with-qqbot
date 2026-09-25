@@ -570,7 +570,6 @@ python scripts/run_bot.py
 | `QQ_BOT_AGENT_ENABLED` | `1` | 关闭后只归档，不处理 |
 | `QQ_BOT_AGENT_CWD` | `agent` | **必须指向含 AGENTS.md 的目录**；支持绝对路径 |
 | `QQ_BOT_EBKTOOLS_PATH` | `.agents/skills/…/ebktools.sh` | 注入 prompt 的 `[工具]` 行 |
-| `QQ_BOT_AGENT_MODEL` | 空 | 多模态模型填这里（OCR 靠它） |
 | `QQ_BOT_AGENT_TIMEOUT` | `120` | 秒 |
 | `QQ_BOT_AGENT_MAX_CONCURRENCY` | `2` | 同时跑几个 agent |
 | `QQ_BOT_SESSION_ROTATION` | `day` | `day`/`week`/`none` |
@@ -667,8 +666,9 @@ Alpine 有两个坑：musl libc 对 Node 生态的兼容风险，以及 `jq`/`ri
 cp .env.example .env
 #  填 QQ_BOT_APP_ID / QQ_BOT_CLIENT_SECRET
 #  填 EBKTOOL_SERVER_BASEURL / EBKTOOL_TOKEN
-#  填一个模型 key（ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY …）
-#  设 QQ_BOT_AGENT_MODEL（多模态模型，看图入账要用）
+#  模型端点 / key / 模型名 → 写进 pi-config/models.json（单一来源）
+#    { "defaultModel": "anthropic/claude-sonnet-4-5",
+#      "providers": { "anthropic": { "baseUrl": "…", "apiKey": "…" } } }
 
 mkdir -p data && sudo chown -R 10001:10001 data   # 见下方「权限坑」
 docker compose up -d --build

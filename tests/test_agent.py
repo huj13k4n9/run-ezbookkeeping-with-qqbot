@@ -429,17 +429,20 @@ def test_models_json(tmp: Path) -> None:
     check("defaultModel 进了 --model", "--model" in argv and argv[argv.index("--model") + 1] == "my-relay/gpt-4o", repr(argv))
     check("来源标记指向文件", runner.model_source.endswith("models.json"), runner.model_source)
 
-    # 环境变量优先（想临时换模型不用改文件）
-    both = cfg_with("both", '{"defaultModel": "from-json/x"}', agent_model="from-env/y")
-    runner_both = AgentRunner(both)
-    check("QQ_BOT_AGENT_MODEL 覆盖文件", runner_both.model == "from-env/y", repr(runner_both.model))
-    check("来源标记指向环境变量", runner_both.model_source == "QQ_BOT_AGENT_MODEL", runner_both.model_source)
+    # 模型名是**单一来源**：只认 models.json。环境变量不再参与，
+    # 且 QQ_BOT_AGENT_MODEL 已被删掉 —— 留着它必须能被察觉，不能静默失效。
+    check("BotConfig 没有 agent_model 字段", not hasattr(one_file, "agent_model"),
+          repr([f for f in one_file.__dataclass_fields__ if "model" in f]))
+    check("被删的变量在 REMOVED_ENV 里",
+          any(n == "QQ_BOT_AGENT_MODEL" for n, _ in BotConfig.REMOVED_ENV),
+          repr(BotConfig.REMOVED_ENV))
 
     # 没有这个键 / 文件不存在 = 不传 --model，让 pi 自己决定
     for label, body in (("没有 defaultModel", '{"providers": {}}'), ("文件不存在", None)):
         runner_plain = AgentRunner(cfg_with("nokey", body))
         check(f"{label} 时不传 --model", "--model" not in runner_plain.build_argv("s", "p", []))
         check(f"{label} 时无问题", not runner_plain.models_json_problem, repr(runner_plain.models_json_problem))
+        check(f"{label} 时来源为空", runner_plain.model_source == "", repr(runner_plain.model_source))
 
     # 解析失败的要将问题报到启动自检里（pi 自己会静默忽略）
     broken = cfg_with("broken", '{\n  /* 块注释 pi 不认 */\n  "providers": {}\n}')
@@ -461,7 +464,10 @@ def test_models_json(tmp: Path) -> None:
 
 def test_build_argv(tmp: Path) -> None:
     print("\n[用例5] AgentRunner.build_argv")
-    cfg = make_config(tmp, agent_model="multimodal:high", agent_extra_args=("--thinking", "high"))
+    # 模型只有一个来源：models.json
+    mj = tmp / "argv-models.json"
+    mj.write_text('{"defaultModel": "multimodal:high"}', encoding="utf-8")
+    cfg = make_config(tmp, agent_models_json=str(mj), agent_extra_args=("--thinking", "high"))
     runner = AgentRunner(cfg)
     argv = runner.build_argv("qq-abc-20260923", "hello", ["/a.jpg", "/b.png"])
     check("以命令开头", argv[0] == cfg.agent_command, argv[0])
@@ -474,7 +480,7 @@ def test_build_argv(tmp: Path) -> None:
     check("@ 文件排在消息之前", argv.index("@/b.png") < argv.index("hello"), repr(argv))
     check("消息是最后一个参数", argv[-1] == "hello")
 
-    no_session = AgentRunner(make_config(tmp, agent_model=None)).build_argv("", "hi", [])
+    no_session = AgentRunner(make_config(tmp)).build_argv("", "hi", [])
     check("无 session 时不带该参数", "--session-id" not in no_session, repr(no_session))
     check("无 model 时不带该参数", "--model" not in no_session, repr(no_session))
 

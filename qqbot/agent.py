@@ -395,27 +395,15 @@ class AgentRunner:
         if not self.cwd.is_absolute():
             self.cwd = (Path.cwd() / self.cwd).resolve()
 
-        # 模型优先级：环境变量（QQ_BOT_AGENT_MODEL）> models.json 的 defaultModel
-        # > 不传，让 pi 自己决定。
-        # 这样端点、密钥、模型名可以全写在 pi-config/models.json 里；
-        # 想临时换一个就不改文件，直接设环境变量。
+        # 模型只有一个来源：models.json 的 defaultModel（见 README）。
+        # 环境变量不再参与 —— 单一来源比“哪边优先”好推理。
         self.models_json = resolve_models_json_path(config)
-        from_json, self.models_json_problem = load_models_json(config)
-        self.model = config.agent_model or from_json
-        if config.agent_model and from_json and config.agent_model != from_json:
-            log.info(
-                "QQ_BOT_AGENT_MODEL=%s 覆盖了 %s 里的 defaultModel=%s",
-                config.agent_model, self.models_json, from_json,
-            )
+        self.model, self.models_json_problem = load_models_json(config)
 
     @property
     def model_source(self) -> str:
         """模型是从哪来的（用于启动自检打印）。"""
-        if self.config.agent_model:
-            return "QQ_BOT_AGENT_MODEL"
-        if self.model:
-            return str(self.models_json)
-        return ""
+        return str(self.models_json) if self.model else ""
 
     def validate(self) -> list[str]:
         """启动自检：返回一串问题描述，空列表表示一切就绪。

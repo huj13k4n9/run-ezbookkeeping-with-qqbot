@@ -82,9 +82,11 @@ def _print_startup(bot: QQBot) -> list[str]:
         print(f"    cwd        : {bot.agent.cwd}")
         print(f"    session    : {cfg.session_prefix}-<hash>-<{cfg.session_rotation}>")
         print(f"    工具       : {cfg.agent_tools}")
-        print(f"    模型       : {bot.agent.model or '(pi 默认)'}")
+        print(f"    模型       : {bot.agent.model or '（未指定，pi 自己选）'}")
         if bot.agent.model:
             print(f"    模型来源   : {bot.agent.model_source}")
+        else:
+            print(f"    模型来源   : {bot.agent.models_json} 里没写 defaultModel")
         print(f"    并发/超时  : {cfg.agent_max_concurrency} / {cfg.agent_timeout:.0f}s")
         print(f"    确认阈值   : {cfg.confirm_amount_threshold or '关闭'}")
     print(f"  白名单       : {cfg.allowed_openids or '不限制'}")

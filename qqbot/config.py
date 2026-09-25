@@ -199,10 +199,8 @@ class BotConfig:
     agent_tools: str = "bash,read"
     #: 单次 agent 超时（秒）
     agent_timeout: float = 120.0
-    #: 透传 --model（多模态模型填这里）；空 = 用 pi 默认模型
-    agent_model: Optional[str] = None
     #: pi 的 models.json 路径；空 = 按 pi 的规则推到 <agent-dir>/models.json。
-    #: 端点、密钥、模型名都可以写在那一个文件里。
+    #: 端点、密钥、模型名都写在那一个文件里（单一来源，见 README）。
     agent_models_json: Optional[str] = None
     #: 全局并发上限（同时跑几个 agent）
     agent_max_concurrency: int = 2
@@ -247,11 +245,27 @@ class BotConfig:
     def gateway_url(self) -> str:
         return f"{self.api_base}/gateway"
 
+    #: 已删除的配置项。留着会**静默失效**（最难查的一类问题），
+    #: 所以只要环境里有就吱一声。
+    REMOVED_ENV: ClassVar[tuple[tuple[str, str], ...]] = (
+        (
+            "QQ_BOT_AGENT_MODEL",
+            "模型名改成单一来源了：写进 pi-config/models.json 的 defaultModel"
+            "（连同 baseUrl / apiKey 一起，不用再两头填）",
+        ),
+    )
+
     @classmethod
     def from_env(cls, env_file: str | os.PathLike | None = ".env", **overrides) -> "BotConfig":
         """从环境变量（可配合 .env）构造配置。"""
         if env_file:
             load_env_file(env_file)
+
+        for name, instead in cls.REMOVED_ENV:
+            if os.environ.get(name):
+                logging.getLogger("qqbot.config").warning(
+                    "%s 已不再生效，请从 .env 里删掉 —— %s", name, instead
+                )
 
         sandbox = _env_bool("QQ_BOT_SANDBOX", False)
         shard_id = _env_int("QQ_BOT_SHARD_ID", default=0)
@@ -291,7 +305,6 @@ class BotConfig:
             or ".agents/skills/ezbookkeeping/scripts/ebktools.sh",
             agent_tools=_env("QQ_BOT_AGENT_TOOLS") or "bash,read",
             agent_timeout=float(_env_int("QQ_BOT_AGENT_TIMEOUT", default=120)),
-            agent_model=_env_opt_str("QQ_BOT_AGENT_MODEL"),
             agent_models_json=_env_opt_str("QQ_BOT_AGENT_MODELS_JSON"),
             agent_max_concurrency=_env_int("QQ_BOT_AGENT_MAX_CONCURRENCY", default=2),
             agent_extra_args=tuple(

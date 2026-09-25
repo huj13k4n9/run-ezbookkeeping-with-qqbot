@@ -85,7 +85,7 @@ cd run-ezbookkeeping-with-qqbot
 cp .env.example .env
 #  ├─ QQ_BOT_APP_ID / QQ_BOT_CLIENT_SECRET     （QQ 开放平台 → 开发设置）
 #  ├─ EBKTOOL_SERVER_BASEURL / EBKTOOL_TOKEN   （ezBookkeeping → 设置 → 令牌）
-#  └─ 一个模型 key + QQ_BOT_AGENT_MODEL         （看图入账需要多模态模型）
+#  └─ 模型端点 / key / 模型名                    （都写进 pi-config/models.json）
 
 sh scripts/init_config.sh                     # 生成 pi-config/ 下的两个配置文件
 mkdir -p data && sudo chown -R 10001:10001 data
@@ -200,7 +200,7 @@ docker compose restart qqbot    # 只需重启，不用重建
 ```
 
 `models.json` 是 gitignore 的，密钥不会进仓库。`.env` 里对应的
-`QQ_BOT_AGENT_MODEL` / `*_API_KEY` **全部留空即可**。
+`*_API_KEY` **全部留空即可**；模型名也**只在 `models.json` 里**（单一来源）。
 
 ### 三个字段分别怎么来的
 
@@ -216,8 +216,9 @@ baseUrl 在 models.json、模型名在 settings.json」要三处填。qqbot 读�
 `models.json` 里 Pi 会忽略的 `defaultModel` 键，作为 `--model` 传给 pi，
 这样三件事就收拢到一个文件。pi 对未知顶层键不作限制（已实测）。
 
-优先级：`QQ_BOT_AGENT_MODEL`（环境变量）> `models.json: defaultModel` > 不传，
-让 pi 自己决定。想临时换个模型、不想改文件时用环境变量。
+**单一来源**：模型名只认 `models.json` 的 `defaultModel`，没有环境变量覆盖 ——
+「哪边优先」比「就一个地方」难推理。改了文件 `docker compose restart qqbot` 即可；
+若 `defaultModel` 缺失，就不传 `--model`，由 pi 自己选。
 
 ### 想用环境变量放密钥也行
 
@@ -261,9 +262,9 @@ pi 内置目录**，不用一个个重写：
 
 配套 `.env`：
 
-```ini
-QQ_BOT_AGENT_MODEL=anthropic/claude-sonnet-4-5
-ANTHROPIC_API_KEY=sk-...        # 中转站给的 key
+```jsonc
+// pi-config/models.json
+{ "defaultModel": "anthropic/claude-sonnet-4-5" }
 ```
 
 这一点是读 pi 源码确认的（`dist/core/model-config.js` 的 `applyModelsJson`）：
@@ -303,9 +304,9 @@ pi 不认识的端点（Ollama / LM Studio / vLLM，或协议不标准的中转�
 }
 ```
 
-```ini
-MY_PROXY_API_KEY=sk-...
-QQ_BOT_AGENT_MODEL=my-proxy/gpt-4o
+```jsonc
+// pi-config/models.json —— defaultModel 已经在上面场景 A 里写过了
+// .env 里只需要给密钥（如果用 $插值 的话）
 ```
 
 ### 几个坑（都是实测出来的）
@@ -360,7 +361,7 @@ pi-config/                pi 的配置目录（只挂两个 json 文件）
   models.json               你自己的（gitignore，由 init_config.sh 生成）
   langfuse.json             你自己的，含 secretKey（gitignore，同上）
 
-tests/                    357 项离线测试
+tests/                    359 项离线测试
 docs/QQBOT.md             完整技术文档
 docker/
   entrypoint.sh           容器入口：配置检查 + 兜底安装 pi 扩展
@@ -374,13 +375,13 @@ docker-compose.yml
 
 ## 测试
 
-全部离线（共 357 项），不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
+全部离线（共 359 项），不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
 
 ```bash
 python tests/test_gateway_local.py    #  26  假网关驱动状态机
 python tests/test_event_media.py      #  62  附件解析/真实下载 + 真实抓包回归
 python tests/test_refindex_quote.py   # 102  引用索引/解析/实测相关性
-python tests/test_agent.py            # 148  会话/去重/prompt/子进程/并发/env 透传/models.json/清洗
+python tests/test_agent.py            # 150  会话/去重/prompt/子进程/并发/env 透传/models.json/清洗
 python tests/test_run_bot_cli.py      #  19  命令行入口（--check 不连网关、未知参数报错）
 ```
 
