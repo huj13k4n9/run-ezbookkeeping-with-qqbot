@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""QQ 记账机器人的常驻服务入口（systemd 拉起）。
+"""QQ 记账机器人的常驻服务入口（systemd / docker 拉起）。
 
 做的事只有三件：
 
@@ -9,15 +9,21 @@
 3. 把 agent 的回复发回 QQ
 
 纯图片消息**不会**启 agent、也不会回复 —— 它只被归档落盘，
-等用户引用它并给出说明时才处理（见 PLAN_QQ_AGENT.md 第 5.1 节）。
+等用户引用它并给出说明时才处理（见 agent/AGENTS.md）。
 
 运行：
 
-    python scripts/run_bot.py
+    python scripts/run_bot.py              # 正常常驻
+    python scripts/run_bot.py --check      # 只做自检，不连网关
+    python scripts/run_bot.py --version
+
+注意：以前这里没有任何参数解析，随手敲的 `--check` 会被**静默忽略**并真的
+把机器人拉起来。现在未知参数会直接报错退出。
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 import signal
 import sys
@@ -32,12 +38,38 @@ for stream in (sys.stdout, sys.stderr):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from qqbot import BotConfig, Event, QQBot  # noqa: E402
+from qqbot import BotConfig, Event, QQBot, __version__  # noqa: E402
 
 log = logging.getLogger("run_bot")
 
 
-def _print_startup(bot: QQBot) -> None:
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="run_bot.py",
+        description="QQ 记账机器人（单聊）。不传参数就是常驻运行。",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "示例：\n"
+            "  %(prog)s                常驻运行\n"
+            "  %(prog)s --check        只做自检（不连 QQ，不花 token）\n"
+        ),
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="只加载配置并做自检，打印摘要后退出；不连网关、不启 agent",
+    )
+    parser.add_argument(
+        "--env-file",
+        default=".env",
+        metavar="PATH",
+        help="指定 .env 路径（默认 ./.env）；传空字符串表示不读文件",
+    )
+    parser.add_argument("--version", action="version", version=f"qqbot {__version__}")
+    return parser
+
+
+def _print_startup(bot: QQBot) -> list[str]:
     cfg = bot.config
     print("=" * 64)
     print("  QQ 记账机器人")
@@ -57,6 +89,7 @@ def _print_startup(bot: QQBot) -> None:
     print("=" * 64)
 
     # QQ bot 代码与 agent 目录通常不在一起，配错很常见 —— 这里直接报到脸上
+    problems: list[str] = []
     if cfg.agent_enabled:
         problems = bot.agent.validate()
         if problems:
@@ -65,11 +98,29 @@ def _print_startup(bot: QQBot) -> None:
             print("  [警告] agent 将无法正常工作，请修正上面的配置\n")
         else:
             print("  [自检] agent 运行环境就绪\n")
+    return problems
 
 
-def main() -> int:
-    bot = QQBot()
-    _print_startup(bot)
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+
+    try:
+        # env_file="" / None 交给 from_env 当“不读文件”处理
+        bot = QQBot(env_file=args.env_file or None)
+    except Exception as exc:  # noqa: BLE001
+        # 配置错误是最常见的首跑故障，给一句人话而不是 traceback
+        print(f"配置错误: {exc}", file=sys.stderr)
+        return 2
+
+    problems = _print_startup(bot)
+
+    if args.check:
+        bot.stop()
+        if problems:
+            log.error("自检未通过（%d 项）", len(problems))
+            return 1
+        log.info("自检通过")
+        return 0
 
     # ---------------------------------------------------------- 事件处理
     @bot.on("C2C_MESSAGE_CREATE")

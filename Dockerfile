@@ -49,6 +49,7 @@ COPY qqbot/ ./qqbot/
 COPY scripts/ ./scripts/
 COPY tests/ ./tests/
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/check_pi_json.js /usr/local/bin/check-pi-json.js
 
 # pi 的配置目录。里面只有扩展声明（settings.json）和预装的扩展包；
 # 真正的配置 models.json / langfuse.json 由 compose **逐文件**挂进来，
@@ -61,7 +62,7 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 # 但没设那个变量时 pi 会回到 ~/.pi/agent，先建好更稳。
 RUN useradd --create-home --uid 10001 qqbot \
  && mkdir -p /home/qqbot/.pi/agent /app/data /app/agent /app/pi-config \
- && chmod +x /usr/local/bin/entrypoint.sh \
+ && chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/check-pi-json.js \
  && chown -R qqbot:qqbot /home/qqbot /app
 
 USER qqbot

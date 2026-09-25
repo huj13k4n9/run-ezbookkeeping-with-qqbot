@@ -97,6 +97,13 @@ docker compose logs -f
 启动时会打印一份自检摘要，并检查 `agent/AGENTS.md` 与 `ebktools.sh` 是否就位 ——
 配错会直接打 `[警告]`，不用等到发消息才发现。
 
+想先干跑一遍（**不连 QQ、不花 token**）：
+
+```bash
+python scripts/run_bot.py --check     # 只自检，通过返回 0，有问题返回 1
+python scripts/run_bot.py --help
+```
+
 ### 本地开发
 
 ```bash
@@ -201,16 +208,58 @@ QQ_BOT_AGENT_PASSTHROUGH_ENV=PATH,HOME,TZ,PI_CODING_AGENT_DIR,PI_CODING_AGENT_SE
 
 pi **没有** `OPENAI_BASE_URL` 这类通用环境变量（只有 Azure 有 `AZURE_OPENAI_BASE_URL`），
 自定义端点必须走 `<agent-dir>/models.json`。这个部署里它按**文件**挂载自
-`pi-config/models.json`（`scripts/init_config.sh` 已生成一个空配置），所以：
+`pi-config/models.json`（`scripts/init_config.sh` 已生成一个空配置）：
 
 ```bash
-vi pi-config/models.json        # 改 baseUrl / model id
-docker compose restart qqbot    # 只需重启
+vi pi-config/models.json        # 改 baseUrl
+chmod 600 pi-config/models.json # 如果要写死密钥
+# .env 里指定走哪个模型
+docker compose restart qqbot    # 只需重启，不用重建
 ```
 
-字段说明和完整示例见 `pi-config/models.json.example`。
+### 推荐写法：只覆盖内置 provider 的 baseUrl
 
-```json
+最省事的方式 —— 只写 `baseUrl`，**模型 id、上下文长度、是否支持图片全部沿用
+pi 内置目录**，不用一个个重写：
+
+```jsonc
+{
+  "providers": {
+    "anthropic": { "baseUrl": "https://your-relay.example.com" },
+  },
+}
+```
+
+配套 `.env`：
+
+```ini
+QQ_BOT_AGENT_MODEL=anthropic/claude-sonnet-4-5
+ANTHROPIC_API_KEY=sk-...        # 中转站给的 key
+```
+
+这一点是读 pi 源码确认的（`dist/core/model-config.js` 的 `applyModelsJson`）：
+
+```js
+baseUrl: config.oauth === "radius" ? model.baseUrl : (config.baseUrl ?? model.baseUrl)
+```
+
+即该 provider 下**所有内置模型**都改走这个地址，而**协议不变** ——
+anthropic 仍然是 `POST <baseUrl>/v1/messages` + `x-api-key` 头。
+实测（本地起假服务器拦截）：
+
+```
+baseUrl = http://127.0.0.1:9999/relay/anthropic
+→ POST /relay/anthropic/v1/messages?beta=true   x-api-key=sk-...
+```
+
+路径前缀会被正确拼接；末尾别自己加 `/v1`。覆盖是**按 provider 隔离**的，
+改了 `anthropic` 不会影响 `openai`（已实测）。
+
+### 另一种写法：整套自定义 provider
+
+pi 不认识的端点（Ollama / LM Studio / vLLM，或协议不标准的中转）用这种：
+
+```jsonc
 {
   "providers": {
     "my-proxy": {
@@ -218,33 +267,40 @@ docker compose restart qqbot    # 只需重启
       "api": "openai-completions",
       "apiKey": "$MY_PROXY_API_KEY",
       "models": [
-        { "id": "gpt-4o", "name": "GPT-4o (via proxy)", "input": ["text", "image"] }
-      ]
-    }
-  }
+        { "id": "gpt-4o", "input": ["text", "image"] },
+      ],
+    },
+  },
 }
 ```
-
-`.env` 里给它配上 key 和默认模型：
 
 ```ini
 MY_PROXY_API_KEY=sk-...
 QQ_BOT_AGENT_MODEL=my-proxy/gpt-4o
 ```
 
-要点：
+### 几个坑（都是实测出来的）
 
-* `apiKey` 支持 `$NAME` / `${NAME}` 环境变量插值，也可以写 `!command` 从命令取 ——
-  所以密钥不用写进 `models.json`。
-* **自定义的 key 变量名要进白名单**，否则不会到 pi 进程：
-  `QQ_BOT_AGENT_PASSTHROUGH_ENV=PATH,HOME,TZ,EBKTOOL_*,MY_PROXY_*`
-  （注意这样会覆盖内置默认值，`EBKTOOL_*` 和模型凭证都别漏）。
-* **看图入账必须声明 `"input": ["text", "image"]`**，否则模型不会被标记为支持图片，
+* **只支持 `//` 行注释和尾随逗号，不支持 `/* */` 块注释。**
+  pi 用的是 `stripJsonComments`，写块注释会让 JSON 解析失败 ——
+  而 pi 对解析失败的处理是**静默忽略整个 models.json**，一个错都不报，
+  表现就是「配置没生效」。容器入口脚本会用相同规则提前验一遍并报出警告。
+* **`apiKey` 里的 `$VAR` 必须真的到得了 pi 进程**：既要进容器（写在 `.env` 里），
+  又要**在 agent 白名单内**。内置白名单已含常见 provider 的 `*_API_KEY`，
+  自定义变量名要加进 `QQ_BOT_AGENT_PASSTHROUGH_ENV`（这套会**覆盖**默认值，
+  `EBKTOOL_*` 和模型凭证都别漏）。漏了的话报错是 `No API key found`。
+* **`apiKey` 支持 `$NAME` / `${NAME}` 插值，也可以写 `!command`** 从命令/密钥库里取，
+  所以密钥不一定要写进 `models.json`。
+* **看图入账必须声明 `"input": ["text", "image"]`**（只有自定义 provider 需要；
+  覆盖内置 provider 时 pi 目录里已经有了）。否则模型不会被标记为支持图片，
   OCR 流程会失效。
+* **provider 条目不能是空对象** `{}` —— pi 会直接报错，至少要有个 `baseUrl`。
 * `api` 取值：`openai-completions`、`openai-responses`、`anthropic-messages`、
   `google-generative-ai`、`mistral-conversations`、`azure-openai-responses`、
   `bedrock-converse-stream`、`openai-codex-responses`、`pi-messages`。
 * 改完 `models.json` / `langfuse.json` 只需 `docker compose restart qqbot`。
+
+完整模板见 `pi-config/models.json.example`。
 
 ## 目录结构
 
@@ -275,9 +331,11 @@ pi-config/                pi 的配置目录（只挂两个 json 文件）
   models.json               你自己的（gitignore，由 init_config.sh 生成）
   langfuse.json             你自己的，含 secretKey（gitignore，同上）
 
-tests/                    309 项离线测试
+tests/                    337 项离线测试
 docs/QQBOT.md             完整技术文档
-docker/entrypoint.sh      容器入口：检查配置 + 兜底安装 pi 扩展
+docker/
+  entrypoint.sh           容器入口：配置检查 + 兜底安装 pi 扩展
+  check_pi_json.js        用 pi 的规则预验 models.json / langfuse.json
 scripts/init_config.sh    生成 pi-config/ 下的两个配置文件
 Dockerfile
 docker-compose.yml
@@ -287,13 +345,14 @@ docker-compose.yml
 
 ## 测试
 
-全部离线（共 309 项），不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
+全部离线（共 337 项），不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
 
 ```bash
 python tests/test_gateway_local.py    #  26  假网关驱动状态机
 python tests/test_event_media.py      #  62  附件解析/真实下载 + 真实抓包回归
 python tests/test_refindex_quote.py   # 102  引用索引/解析/实测相关性
-python tests/test_agent.py            # 119  会话/去重/prompt/子进程/并发/env 透传/清洗
+python tests/test_agent.py            # 128  会话/去重/prompt/子进程/并发/env 透传/清洗
+python tests/test_run_bot_cli.py      #  19  命令行入口（--check 不连网关、未知参数报错）
 ```
 
 几个「固化了实测事实」的用例值得一提 —— 哪天平台行为变了，测试会立刻失败：
@@ -301,6 +360,8 @@ python tests/test_agent.py            # 119  会话/去重/prompt/子进程/并�
 * `test_reply_breaks_refidx_correlation` —— 机器人回复导致 REFIDX 失效（4/4 相关）
 * `test_real_capture_regression` / `test_real_capture_success` —— 真实抓包的正反两面
 * `test_refidx_structure` —— REFIDX 的 22+106 结构，防止有人靠「字符串像」做匹配
+* `test_cli / test_check_mode` —— 入口脚本曾经**没有参数解析**，敲错 `--check`
+  会被静默忽略并把机器人真的拉起来连 QQ
 
 ---
 

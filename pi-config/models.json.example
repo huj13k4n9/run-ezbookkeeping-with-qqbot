@@ -1,22 +1,90 @@
-{
-  "_comment": "用法：sh scripts/init_config.sh 会生成一个空配置，或者 cp 本文件成 models.json 再改。它按文件挂载到 /app/pi-config/models.json，改完 docker compose restart qqbot 即可。",
-  "_docs": "https://pi.dev/docs 的 models.md「Configure a compatible endpoint」",
+// pi 的模型配置。用法：sh scripts/init_config.sh 会生成一个空配置，
+// 或者 cp 本文件成 models.json 再改。
+// 它按文件挂载到 /app/pi-config/models.json，改完 docker compose restart qqbot 即可。
+//
+// ⚠️ 语法限制（实测）：只支持 // 行注释和**尾随逗号**，
+//    **不支持 /* */ 块注释**。写错的话 models.json 会被 pi 整个忽略，
+//    而且**不会有任何报错** —— 表现是「配置没生效」。容器入口脚本会检查这一条。
+//
+// 文档：pi 的 docs/models.md「Configure a compatible endpoint」
 
+
+// ===========================================================================
+// 场景 A（推荐）：把**内置 provider** 指向自己的中转 / 网关 / 代理
+// ===========================================================================
+//
+// 只写 baseUrl 就行 —— 模型 id、上下文长度、是否支持图片这些
+// 全部沿用 pi 内置目录，不用一个个重写。
+//
+// 实测 pi 内部是这么合并的（dist/core/model-config.js 的 applyModelsJson）：
+//
+//     baseUrl: config.baseUrl ?? model.baseUrl
+//
+// 也就是该 provider 下的**所有内置模型**都改走这个地址，协议不变
+// （anthropic 仍然 POST 到 <baseUrl>/v1/messages）。
+//
+// 配好之后 .env 里指定模型即可：
+//
+//     QQ_BOT_AGENT_MODEL=anthropic/claude-sonnet-4-5
+//
+// 注意 baseUrl 后面不要带 /v1 —— pi 自己会拼。中转站要求带路径前缀的话，
+// 写成 https://relay.example.com/anthropic 这样即可（实测拼成
+// /anthropic/v1/messages）。
+
+{
   "providers": {
-    "my-proxy": {
-      "baseUrl": "https://your-llm-proxy.example.com/v1",
-      "api": "openai-completions",
-      "apiKey": "$MY_PROXY_API_KEY",
-      "models": [
-        {
-          "id": "gpt-4o",
-          "name": "GPT-4o (via proxy)",
-          "input": ["text", "image"],
-          "reasoning": false,
-          "contextWindow": 128000,
-          "maxTokens": 16384
-        }
-      ]
-    }
-  }
+    "anthropic": {
+      "baseUrl": "https://your-relay.example.com",
+      // apiKey 可以用 $NAME / ${NAME} 插值（也可写 !command 从命令取）
+      // ⚠️ 用到的环境变量必须真的进到容器里，并且**在 agent 白名单内**，
+      //    否则 pi 会报 "No API key found"。
+      //    内置白名单已含各家的 *_API_KEY，自定义变量名要加
+      //    QQ_BOT_AGENT_PASSTHROUGH_ENV。
+      "apiKey": "$ANTHROPIC_API_KEY",
+    },
+
+    // 同时给多个 provider 换地址也行，互不影响
+    "openai": {
+      "baseUrl": "https://your-relay.example.com/openai",
+      "apiKey": "$OPENAI_API_KEY",
+    },
+  },
 }
+
+
+// ===========================================================================
+// 场景 B：pi 不认识的端点，整套自定义 provider
+// ===========================================================================
+//
+// 用在 Ollama / LM Studio / vLLM / SGLang，或者中转站的协议不标准时。
+// 要自己声明 models 列表。
+//
+// 关键点：
+//   * "input": ["text", "image"] —— **看图入账必须声明**，
+//     否则模型不会被标记为支持图片，OCR 流程失效。
+//   * "api" 取值：openai-completions | openai-responses | anthropic-messages |
+//     google-generative-ai | mistral-conversations | azure-openai-responses |
+//     bedrock-converse-stream | openai-codex-responses | pi-messages
+//   * 本地服务不需要真 key，随便填一个（比如 "ollama"）就能让模型可用。
+//
+// 配好之后：QQ_BOT_AGENT_MODEL=my-proxy/gpt-4o
+//
+// {
+//   "providers": {
+//     "my-proxy": {
+//       "baseUrl": "https://your-llm-proxy.example.com/v1",
+//       "api": "openai-completions",
+//       "apiKey": "$MY_PROXY_API_KEY",
+//       "models": [
+//         {
+//           "id": "gpt-4o",
+//           "name": "GPT-4o (via proxy)",
+//           "input": ["text", "image"],
+//           "reasoning": false,
+//           "contextWindow": 128000,
+//           "maxTokens": 16384
+//         }
+//       ]
+//     }
+//   }
+// }
