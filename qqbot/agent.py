@@ -380,6 +380,7 @@ def build_agent_env(config, base_env: Optional[dict] = None) -> dict:
     for name in ("EBKTOOL_SERVER_BASEURL", "EBKTOOL_TOKEN"):
         if name in source and name not in env:
             env[name] = source[name]
+
     env.setdefault("TZ", config.timezone)
     return env
 
@@ -416,7 +417,7 @@ class AgentRunner:
 
         tools = resolve_passthrough_path(self.config.ebktools_path)
         if not tools.is_file():
-            problems.append(f"ebktools.sh 不存在: {tools}")
+            problems.append(f"ebktools 不存在: {tools}")
 
         # models.json 写错的话 pi 会静默忽略（表现为「配置没生效」），
         # 容器入口会报，但本地直接跑 run_bot.py 时只靠这里。
