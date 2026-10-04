@@ -6,7 +6,8 @@
 #   docker compose logs -f
 #
 # 想从宿主机先手动验证 agent：
-#   docker compose run --rm --entrypoint pi qqbot --print --tools bash,read -- "记 30 午饭"
+#   docker compose run --rm --entrypoint pi qqbot --print \
+#     --tools bash,read,write,edit,grep,find,ls -- "记 30 午饭"
 #
 # 想看 Langfuse 是否生效（插件自己的调试日志）：
 #   PI_LANGFUSE_DEBUG=true docker compose run --rm qqbot
@@ -78,8 +79,8 @@ services:
       - ${AGENT_DIR:-./agent}:/app/agent:ro
       - ${AGENTS_SKILLS_DIR:-./.agents}:/app/.agents:ro
 
-    # agent 最长会跑 QQ_BOT_AGENT_TIMEOUT（默认 120s），给足退出时间
-    stop_grace_period: 130s
+    # agent 最长会跑 QQ_BOT_AGENT_TIMEOUT（默认 600s，批量导入账单需要），给足退出时间
+    stop_grace_period: 620s
 
     security_opt:
       - no-new-privileges:true

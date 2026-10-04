@@ -51,7 +51,14 @@ QQ 的引用消息靠 `REFIDX_xxx` 索引回查原文。我们实测发现（4/4
 等于在两个已经互信的东西之间划线。
 
 真正要防的是「agent 执行任意 bash」，而那是它的功能。同容器下已经做了：
-非 root、`no-new-privileges`、`--tools bash,read`、约束目录只读挂载、资源与 pid 上限。
+非 root、`no-new-privileges`、工具白名单（`--tools bash,read,write,edit,grep,find,ls`）、
+约束目录只读挂载、资源与 pid 上限。
+
+> 写文件的能力是给**复杂记账**用的：落个临时脚本比把几十行管道挤进一条 `bash -c` 好调。
+> 落盘位置由 `agent/AGENTS.md`「临时文件」约束在 **`/tmp`** ——
+> `agent/` 与 `.agents/` 仍是只读挂载，往那边写一定失败。
+> pi 没有目录级权限控制，`--tools` 是唯一粒度；想收紧回「只能跑内联脚本」就把
+> `QQ_BOT_AGENT_TOOLS` 改回 `bash,read`。
 
 ### 3. 会话按用户分配，但**按天轮换**
 
@@ -71,6 +78,98 @@ QQ 的引用消息靠 `REFIDX_xxx` 索引回查原文。我们实测发现（4/4
 同理还有：账户和分类要传 **ID** 不是名字、`--type` 是**整数**、**没有 `--dry-run`**。
 这些全部写死在 `agent/AGENTS.md` 里。完整参数表见
 [docs/QQBOT.md](docs/QQBOT.md)。
+
+### 5. 「一条消息记一笔」不是接口限制，是提示词写错了
+
+`AGENTS.md` 里曾经有一句 **「一条用户消息最多写一笔账」**。加上 ezBookkeeping 的
+`transactions-add` 本身只能一笔一笔调（`ebktools.sh` 的 `API_CONFIGS` 里没有任何
+batch / import 命令，已核对全部 11 个命令），模型把这两件事混成了一件：
+
+> 用户发一张 9 笔的账单截图说「帮我导入这些账单数据」→
+> 模型记完第 1 笔 → 「已记第 1 笔…回复『继续』我记下一笔」→ 用户被卡住。
+
+接口只能一命令一笔，是**工具**的限制；一次运行内连续调 9 次、最后回一句话，
+和「一次只记一笔、每次都要用户再说一句」完全是两回事。改法是：
+
+* 把「最多写一笔账」换成 **「批量记账」** 一节：先数清几笔 → 账户/分类各查一次 →
+  **逐条写完** → **只回一条汇总**（「已记 9 笔，共 128.85 元」），中途不许停
+* 明确写「**一条命令写一笔 ≠ 一条消息写一笔**」「不要输出『已记第 N 笔，回复继续』」
+* 补记历史账单**允许**：`--time` 接受过去的时间，每笔用账单自己的日期，
+  不要拿今天顶替（之前它还会以「早于这个账户开始记账的日期」为由拒绝入账）
+
+配套还改了 `QQ_BOT_AGENT_TIMEOUT` 的默认值（120s → 1800s），并加了
+`QQ_BOT_AGENT_INTERIM_AFTER`（默认 90s）：agent 跑太久会先回一句「在处理」，
+免得用户以为消息没发出去而重发。超时上限调大的原因是**超时的表现最糟**——
+pi 被杀且 stdout 为空，用户只会收到一句「处理超时了」，等于没回复。
+详见 [docs/QQBOT.md](docs/QQBOT.md#msg_seq-由我们自己分配不是平台默认值)（含 `msg_seq` 那个必炸的坑）。
+原始 120s 是「一问一答」尺度，而批量导入是**一次运行**里十几次
+`transactions-add`，超时会记到一半被 kill —— 表现恰好又是「只记了几笔就没了」。
+`tests/test_agent.py` 里有用例钉住这些话术、超时下限与回执时序（用例 8b/8c/11）。
+
+### 6. 去重靠「时间+金额」判重，而时间筛选参数是个坑
+
+批量导入必然带来重发：同一张账单图再发一次、或者发一个和上次重叠的列表。
+所以入账前要先查一遍，同一笔就跳过。判重口径是 **`time`（unix 秒逐位相等）+
+`sourceAmount`（分）+ `sourceAccountId` + `type` 四项全等**，在**分**这一级比 ——
+用元做浮点比较会漏判（`4.20` 在浮点里不是精确值）。
+
+坑在查询参数上，这是**实测**出来的：
+
+| 命令 | 参数 | 实际语义 |
+| --- | --- | --- |
+| `transactions-list` | `--min_time` / `--max_time` | **游标 `timeSequenceId`，不是 unix 时间** |
+| `transactions-list-all` | `--start_time` / `--end_time` | unix 秒 ✅ |
+
+把 unix 秒传给 `--min_time` **不报错、只返回 `No data to display`**。
+对去重来说这是最坏的一种失败：它会让人（和模型）以为「没记过」，于是又记一遍 ——
+**去重逻辑本身变成了重复入账的帮凶**。所以 `AGENTS.md` 里把这条单独写成了警告。
+
+反例也写了：**时间相同金额不同、或金额相同时间不同，都是另一笔，必须照记** ——
+同一天买两次一样的东西是两笔，不能「宁少记不多记」地误跳过。
+
+### 7. skill 不再 vendored，改成照官方复刻的增强版
+
+`.agents/skills/ezbookkeeping/` 原来是**官方 skill 的原样副本**
+（`ebktools.sh` + `ebktools.ps1` + `SOURCE.md`），只有 12 条命令，
+**没有 modify、也没有统计**。
+
+现在这个目录是**照官方复刻的增强版**：skill 名字不变（`ezbookkeeping`），
+实现换成 Python，命令名与参数名沿用官方，另加三条本项目需要的命令。
+于是一个入口就够了 —— 不再需要「官方脚本 + 另一层 wrapper」两套路径、两套说明。
+
+```bash
+sh ebktools.sh --tz-offset 480 query --range this-month --amount-filter gt:10000   # 筛选查账
+sh ebktools.sh --tz-offset 480 stats --range this-month                          # 统计报表
+sh ebktools.sh --tz-offset 480 modify --id <ID> --comment "改成晚饭" --dry-run      # 改单笔
+```
+
+命名注意：官方的 `list` 是"列出所有命令"，所以筛选查账叫 **`query`**。
+
+三个实现上踩过的坑（都实测过）：
+
+* **金额和余额都是整数分**：接口返回 `"balance": 928712` 是 **9287.12 元**。
+* **布尔参数要序列化成 `true`/`false`**：`urlencode` 会把 `True` 写成 `"True"`，
+  服务端**不报错、直接当没传**。
+* **`modify` 是整笔替换**：只传 `comment` 会把金额/分类清空，所以要先按 ID
+  把原交易拉回来、只覆盖用户给的字段；值为 null 的可选字段必须丢掉
+  （服务端对显式 null 报错）。
+
+改账是破坏性操作，所以 `modify` 有 `--dry-run`，并且 `AGENTS.md` 要求
+**查 → 预演 → 用户确认 → 提交** 四步走。详见
+[docs/QQBOT.md](docs/QQBOT.md)（第十节），测试见 `tests/test_ebktools_cli.py`（107 项）。
+
+### 8. 用户档案 `agent/USER.md`（可选）
+
+账户名、口语别名、默认账户、分类习惯这类**因人而异**的东西放在
+`agent/USER.md`，`AGENTS.md` 里只保留与账本无关的通用规则。
+
+**这个文件是可选的**：
+
+* 在 `.gitignore` 里（属于个人数据，不入库），默认部署**不会**有它；
+* 读不到时 agent **不报错、也不反问用户**，直接按 `AGENTS.md` 的通用规则跑 ——
+  账户以 `accounts-list` 为准、分类以 `transaction-categories-list` 为准；
+* 想定制就照着 `AGENTS.md` 的描述自己写一份放进去（容器里 `agent/` 是挂载的，
+  改完重启容器即可，不用重建镜像）。
 
 ---
 
@@ -170,7 +269,7 @@ qqbot 的白名单里**只保留 `PI_LANGFUSE_*`**（`PI_LANGFUSE_DEBUG` 调试�
 
 ```bash
 # 跑一次真实记账，同时打开插件调试日志（走 stderr）
-docker compose run --rm -e PI_LANGFUSE_DEBUG=true   --entrypoint pi qqbot --print --tools bash,read -- "记 1 元 连通性测试"
+docker compose run --rm -e PI_LANGFUSE_DEBUG=true   --entrypoint pi qqbot --print --tools bash,read,write,edit,grep,find,ls -- "记 1 元 连通性测试"
 ```
 
 调试日志会说明它有没有读到 `langfuse.json`、有没有成功上传。
@@ -351,8 +450,14 @@ qqbot/                   QQ 官方 API v2 接入层
 
 agent/
   AGENTS.md               交给 pi 的约束（分流规则、记账规则、回复格式、禁止泄露）
+  USER.md                 用户档案（可选，见「设计取舍」第 8 条；默认被 gitignore）
 
-.agents/skills/ezbookkeeping/   官方 ebktools.sh（vendored，见同目录 SOURCE.md）
+.agents/skills/ezbookkeeping/   复刻增强版工具（12 条官方命令 + query/modify/stats）
+  SKILL.md                      命令说明 + 来源与许可
+  scripts/ebktools.sh           入口（找解释器）
+  scripts/ebktools.py           CLI 实现（命令表在文件顶部）
+  scripts/stats.py              统计聚合（纯函数）
+  scripts/ranges.py             自然月/周/年 → unix 区间
 
 scripts/
   run_bot.py              常驻服务入口
@@ -364,7 +469,7 @@ config/                pi 的配置目录（只挂两个 json 文件）
   models.json               你自己的（gitignore）
   langfuse.json             你自己的，含 secretKey（gitignore）
 
-tests/                    359 项离线测试
+tests/                    391 项离线测试
 docs/QQBOT.md             完整技术文档
 docker/
   entrypoint.sh           容器入口：配置检查 + 兜底安装 pi 扩展
@@ -377,13 +482,13 @@ docker-compose.yml
 
 ## 测试
 
-全部离线（共 359 项），不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
+全部离线（共 391 项），不需要真实机器人、不需要 ezBookkeeping、不需要装 pi。
 
 ```bash
 python tests/test_gateway_local.py    #  26  假网关驱动状态机
 python tests/test_event_media.py      #  62  附件解析/真实下载 + 真实抓包回归
 python tests/test_refindex_quote.py   # 102  引用索引/解析/实测相关性
-python tests/test_agent.py            # 150  会话/去重/prompt/子进程/并发/env 透传/models.json/清洗
+python tests/test_agent.py            # 182  会话/去重/prompt/子进程/并发/env 透传/models.json/清洗/批量与去重约束
 python tests/test_run_bot_cli.py      #  19  命令行入口（--check 不连网关、未知参数报错）
 ```
 
@@ -396,6 +501,10 @@ python tests/test_run_bot_cli.py      #  19  命令行入口（--check 不连网
   会被静默忽略并把机器人真的拉起来连 QQ
 * `test_models_json` 里的 `strip_json_comments` 用例 —— 与 pi 的 JS 实现逐例比对
   （注释/尾随逗号/字符串里的 `//`/转义引号），两边行为必须一致
+* `test_batch_import_spec` —— 钉住「账单列表一次全部记完」的话术，
+  并守住「`最多写一笔账` 不许回来」和超时下限（见上面第 5 条）
+* `test_dedup_spec` —— 钉住去重口径（四项全等、按分比较），
+  以及「`--min_time`/`--max_time` 是游标不是 unix 时间」这个静默失败陷阱（见上面第 6 条）
 
 ---
 
@@ -404,7 +513,7 @@ python tests/test_run_bot_cli.py      #  19  命令行入口（--check 不连网
 **已验证**
 
 * QQ 鉴权、网关订阅、消息收发、引用解析、图片落盘 —— 真机跑通
-* 全部业务逻辑 —— 298 项离线测试
+* 全部业务逻辑 —— 391 项离线测试
 
 **未验证**
 
@@ -418,7 +527,7 @@ python tests/test_run_bot_cli.py      #  19  命令行入口（--check 不连网
 
 | 组件 | 用途 | 许可 |
 | --- | --- | --- |
-| [ezBookkeeping](https://github.com/mayswind/ezbookkeeping) 的 `skills/ezbookkeeping/` | 记账执行层。**vendored** 在 `.agents/skills/ezbookkeeping/`，未做修改 | MIT，版权归 MaysWind —— 见 [LICENSE](.agents/skills/ezbookkeeping/LICENSE) 与 [SOURCE.md](.agents/skills/ezbookkeeping/SOURCE.md) |
+| [ezBookkeeping](https://github.com/mayswind/ezbookkeeping) 的 `skills/ezbookkeeping/` | **参照对象**：`.agents/skills/ezbookkeeping/` 的命令名、参数名、请求形状与错误语义都照它复刻，实现是本项目重写的 Python 版（不是原样拷贝） | 上游 MIT，版权归 MaysWind —— 保留了 [LICENSE](.agents/skills/ezbookkeeping/LICENSE)，说明见 [SKILL.md](.agents/skills/ezbookkeeping/SKILL.md) |
 | [pi](https://github.com/earendil-works/pi) (`@earendil-works/pi-coding-agent`) | 约束执行与工具调用 | 见上游 |
 | [`@langfuse/pi-observability-plugin`](https://github.com/langfuse/pi-observability-plugin) | 可观测性。**不 vendored**，由容器入口脚本按需安装 | MIT |
 

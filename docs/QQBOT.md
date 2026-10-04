@@ -220,6 +220,20 @@ bot.run()
 - **被动回复必须带 `msg_id`**（即事件的 `d.id`），单聊 60 分钟内有效、最多回 4 次。
   同一 `msg_id` 下 `msg_seq` 必须不同，否则报 `40054005`。
 - 超过窗口期就只能发主动消息，受主动消息频控限制（单关系维度 20/qpm，每天最多 1000 条）。
+
+### `msg_seq` 由我们自己分配（不是平台默认值）
+
+`default_msg_seq = 1` 是**起始值**，`Event.next_reply_seq()` 负责按事件递增：
+
+- 同一个事件回两次（先「在处理」、后回结果）→ seq 分别是 1、2，**不会撞去重**
+- 不同事件各自从 1 开始，互不影响
+- 用满 4 次后返回 `None`，`reply()` 自动**退化为主动消息**（不带 `msg_id`）——
+  继续发被动回复只会静默撞 `40054005`，表现是「第二条回复神秘消失」
+
+> 历史坑：这两个字段原先都定义了但**没人用**（`reply()` 一路传 `msg_seq=None`，
+> body 里根本不带该字段）。于是任何「先回一句再回结果」的改动都会在第二条上失败。
+> 想持续播报进度的话，被动回复 4 次的上限不够，得整体改用主动消息。
+
 - 每条消息可能被重复推送，业务侧建议用 `msg_id` 去重后再记账。
 - 单聊的 `user_openid` 是**每个 AppID 独立的**，不能跨机器人通用，存库时以它为主键即可。
 
@@ -542,6 +556,51 @@ QQ 单聊消息
 `transactions-list-all` / `transactions-add` / `exchangerates-latest` /
 `server-version`。
 
+**没有批量接口。** `API_CONFIGS` 里 11 个命令逐个核对过，没有任何 batch / import /
+批量入账的端点，`transactions-add` 一次只写一笔。所以「导入一张账单截图里的 9 笔」
+只能是**一次 agent 运行里连着调 9 次** `transactions-add`（账户和分类各查一次就够，
+不用每笔重查）。
+
+这一点必须写进 `AGENTS.md`，否则模型很容易把「工具一次只能写一笔」理解成
+「用户一条消息只能记一笔」，于是记完第 1 笔就停下来问「先记哪一笔」——
+`AGENTS.md` 里原本那句「一条用户消息最多写一笔账」正是这个误解的来源（已删除，
+见 README 第 5 条）。现在的约束是：
+
+* 消息里有几笔就写几笔，**一次运行内写完**，中途不停、不反问
+* 逐条 `transactions-add`，某笔失败不影响其余笔
+* 每笔用**账单自己的日期**（`--time` 接受过去的时间，补记历史账单是允许的）
+* 最后**只回一条汇总**（「已记 9 笔，共 128.85 元」），不贴逐笔明细
+* 确认阈值只针对**单笔**金额，不因为一笔大额卡住整个批次
+
+配套地，`QQ_BOT_AGENT_TIMEOUT` 的默认值从 120s 提到 **1800s**：120s 是「一问一答」
+尺度，批量导入会被超时 kill，表现同样是「只记了几笔就没了」。
+
+### 去重：靠「时间 + 金额」，而时间筛选参数有个坑
+
+重发同一张账单图是必然会发生的事（这也是最容易重复记账的路径），所以入账前先查一遍，
+四项全等就跳过：`time`（unix 秒**逐位相等**）+ `sourceAmount`（**分**）+ `sourceAccountId` + `type`。
+**在分这一级比**：`4.20 元 == 420`、`44.63 元 == 4463`；用元做浮点比较会漏判。
+
+时间筛选**只能用 `transactions-list-all`**：
+
+```bash
+sh "$EBK" --tz-offset 480 transactions-list-all --start_time <unix> --end_time <unix>
+```
+
+| 命令 | 参数 | 实际语义（实测） |
+| --- | --- | --- |
+| `transactions-list` | `--min_time` / `--max_time` | **游标 `timeSequenceId`，不是 unix 时间** |
+| `transactions-list-all` | `--start_time` / `--end_time` | unix 秒 ✅ |
+
+实测把 unix 秒传给 `--min_time`：**不报错，只返回 `No data to display`**
+（`transactions/list.json?count=10&min_time=1790265600&max_time=1790326498` → 空表；
+同参数换成 `list/all.json?start_time=…&end_time=…` → 正常返回 3 笔）。
+对去重来说这是最坏的一类失败：**它让「没查到」看起来像「没记过」，
+于是去重逻辑本身成了重复入账的帮凶。**
+
+反例同样写进了约束：**时间或金额只要有一项不同就是另一笔，必须照记** ——
+同一天买两次一样的东西是两笔，不能「宁少记不多记」地误跳过。
+
 ### 为什么纯图片不启 agent
 
 实测结论（第七章）：机器人**被动回复过**的消息，QQ 会重新生成它的 REFIDX。
@@ -569,11 +628,13 @@ python scripts/run_bot.py
 | --- | --- | --- |
 | `QQ_BOT_AGENT_ENABLED` | `1` | 关闭后只归档，不处理 |
 | `QQ_BOT_AGENT_CWD` | `agent` | **必须指向含 AGENTS.md 的目录**；支持绝对路径 |
-| `QQ_BOT_EBKTOOLS_PATH` | `.agents/skills/…/ebktools.sh` | 注入 prompt 的 `[工具]` 行 |
-| `QQ_BOT_AGENT_TIMEOUT` | `120` | 秒 |
+| `QQ_BOT_EBKTOOLS_PATH` | `.agents/skills/…/ebktools.sh` | 注入 prompt 的 `[工具]` 行。指向**复刻增强版**（12 条官方命令 + `query`/`modify`/`stats`），所以只有一个工具路径 |
+| `QQ_BOT_AGENT_TIMEOUT` | `1800` | 秒。**别往小调**：一条批量导入 = 一次运行里十几次 `transactions-add`，调小会在记到一半时被 kill。超时的表现尤其糟糕 —— pi 被杀且 stdout 为空，用户只会收到一句「处理超时了」 |
+| `QQ_BOT_AGENT_INTERIM_AFTER` | `90` | 秒。agent 跑超过这么久就先回一句「在处理」，免得用户以为消息没发出去而重发。`0`=关闭。**必须小于 `QQ_BOT_AGENT_TIMEOUT`**（否则永远发不出来，启动即报错） |
+| `QQ_BOT_AGENT_INTERIM_TEXT` | `收到，正在处理，稍等一下～` | 上面那句的文案 |
 | `QQ_BOT_AGENT_MAX_CONCURRENCY` | `2` | 同时跑几个 agent |
 | `QQ_BOT_SESSION_ROTATION` | `day` | `day`/`week`/`none` |
-| `QQ_BOT_CONFIRM_AMOUNT_THRESHOLD` | `1000` | ≥ 此金额先确认再入账；`0`=关闭 |
+| `QQ_BOT_CONFIRM_AMOUNT_THRESHOLD` | `1000` | 单笔 ≥ 此金额先确认再入账；`0`=关闭。批量导入时逐笔判断，不按总和 |
 | `QQ_BOT_DEDUP_TTL` | `600` | msg_id 去重窗口（秒） |
 | `QQ_BOT_REPLY_MAX_CHARS` | `500` | 回复硬截断 |
 | `QQ_BOT_ALLOWED_OPENIDS` | 空 | 空 = 不限制 |
@@ -647,8 +708,15 @@ python tests/test_agent.py   # 119 项：会话轮换/去重/prompt/子进程/�
 等于在两个已经互信的东西之间划线。
 
 真正要防的是「agent 执行任意 bash」，而那是它的功能。同容器下已经做了：
-非 root（uid 10001）、`no-new-privileges`、`--tools bash,read`、
+非 root（uid 10001）、`no-new-privileges`、
+`--tools bash,read,write,edit,grep,find,ls`、
 `agent` 与 `.agents` 只读挂载、资源与 pid 上限。
+
+> `write`/`edit` 是给**复杂记账**开的口子（落临时脚本比把几十行管道挤进一条
+> `bash -c` 好调、可复用）。落盘位置由 `agent/AGENTS.md`「临时文件」一节约束在
+> **`/tmp`**：`agent/` 与 `.agents/` 依然只读，往那边写一定失败，所以这个口子
+> 换不来「改写约束文件或脚本」的能力。pi **没有**目录级权限控制，`--tools`
+> 就是唯一的粒度；要收回去就把 `QQ_BOT_AGENT_TOOLS` 改成 `bash,read`。
 
 > 如果哪天真需要强隔离，正确做法是 pi 官方的 **Gondolin 扩展**
 > （把 `bash`/`read` 路由进本地 micro-VM），而不是把 pi 拆到另一个容器 ——
@@ -710,7 +778,8 @@ docker compose run --rm --entrypoint sh qqbot -c \
   'sh /app/.agents/skills/ezbookkeeping/scripts/ebktools.sh accounts-list'
 
 # 手动跑一次 agent
-docker compose run --rm --entrypoint pi qqbot --print --tools bash,read -- "记 30 午饭"
+docker compose run --rm --entrypoint pi qqbot --print \
+  --tools bash,read,write,edit,grep,find,ls -- "记 30 午饭"
 
 # 跑测试（tests/ 已经打进镜像）
 docker compose run --rm --entrypoint python qqbot tests/test_agent.py
@@ -734,3 +803,70 @@ docker compose run --rm --entrypoint python qqbot tests/test_agent.py
 * compose 里默认**没有**开启只读根文件系统（`read_only: true`），
   因为没在真实环境实测过。想加固就把那三行注释打开；
   若启动报 `Read-only file system`，说明 pi 或 Python 需要写别的路径，把 tmpfs 补上即可。
+
+## 十、工具脚本：复刻增强版 `ebktools`
+
+`.agents/skills/ezbookkeeping/` 原来是**官方 skill 的原样 vendored 副本**
+（`ebktools.sh` + `ebktools.ps1` + `SOURCE.md`），只有 12 条命令、
+**没有 modify、也没有统计**。
+
+现在这个目录是**照着官方复刻出来的增强版**，skill 名字不变（`ezbookkeeping`），
+但实现换成了 Python，多出三条本项目需要的命令：
+
+```
+.agents/skills/ezbookkeeping/
+    SKILL.md                 命令说明（含来源与许可说明）
+    LICENSE                  上游 MIT 许可（保留）
+    scripts/ebktools.sh      sh 入口（找解释器 + 版本检查，逻辑都在 py 里）
+    scripts/ebktools.py      CLI：官方 12 条 + query / modify / stats
+    scripts/stats.py         统计聚合（纯函数，可单测）
+    scripts/ranges.py        「本月 / 上周 / 2026-09」→ unix 区间
+tests/test_ebktools_cli.py   107 项用例（本地 mock 服务端，不外网）
+```
+
+### 为什么合成一个入口
+
+原来官方脚本不动、增强功能另做一层 `ebk-extra`，于是 prompt 里要注入两条路径
+（`[工具]` 和 `[增强工具]`），agent 得记住"哪个命令在哪个脚本里"。
+合成一个之后只有一个 `$EBK`，也就不需要第二套说明。
+
+命令名沿用官方（`accounts-list` / `transactions-add` / …），所以
+`AGENTS.md` 里那些调用模板**一个字都不用改**。筛选查账叫 **`query`** ——
+官方的 `list` 已经被"列出所有命令"占了。
+
+### 三条增强命令
+
+```bash
+sh ebktools.sh --tz-offset 480 query --range this-month --type 3 --amount-filter gt:10000
+sh ebktools.sh --tz-offset 480 query --range this-month --tag-filter 0:TAG1 --count 20
+sh ebktools.sh --tz-offset 480 stats --range this-month
+sh ebktools.sh --tz-offset 480 modify --id <ID> --comment "改成晚饭" --dry-run
+```
+
+`--tz-name` / `--tz-offset` **写在命令名前后都认**（官方脚本只认前面那种）。
+需要时区的命令少给时区会**前置报错**，而不是等服务端回一句含糊的 `200008`。
+`--key=value` 写法会被明确拒绝（只认空格分隔），避免"参数没生效"的诡异现象。
+
+### 几个必须知道的实现细节
+
+| 点 | 说明 |
+| --- | --- |
+| **金额与余额都是整数分** | 接口返回 `"balance": 928712` 就是 **9287.12 元**。`stats` 和余额回显都已换算成元 |
+| **布尔参数要序列化成 `true`/`false`** | `urlencode` 会把 Python 的 `True` 写成 `"True"`，服务端**不报错、直接当没传** |
+| **转账不计入收支** | 一进一出，计进收支会双算。`stats` 单独列一行；余额修改（type 1）同理 |
+| **modify 是整笔替换** | 只传 `comment` 会把金额/分类清空。实现先按 ID 把原交易拉回来、**只覆盖用户给的字段**，并丢掉值为 `null` 的可选字段（服务端对显式 null 报 200000） |
+| **接口没有「按 ID 查」** | 只能开时间窗翻页找。`--near-time` 给大致时间，默认前后 30 天 |
+| **`--dry-run` 不提交** | 改账前先给用户看「改前 → 改后」，agent 的确认流程依赖它 |
+
+### 验证记录（真实服务端，只读 + 一次可逆写入）
+
+* `stats --range last-month` 对真实数据算出：支出 211.83 元 / 收入 28.95 元 /
+  转账 518.00 元单独列 —— 与账本一致。
+* `modify` 用一笔真实交易做了**改掉再改回的闭环**：提交 → 读回确认 → 改回 → 最终一致，
+  且全程**只有 `comment` 变化**（金额/分类/账户/时间原样保留）。
+* 已知限制：`delete` **没有**实现（用户明确不要），所以测试期间无法自动清理；
+  上面的闭环刻意选在一条既有记录上做，就是为了不留下测试数据。
+
+> 运行环境：只依赖 Python 3.8+ 标准库（不需要 jq、不需要 pip 包）。
+> 容器里 `python3` 由 Dockerfile 装好，`.agents/skills` 是**挂载**进来的
+> （见 compose），所以改脚本不用重建镜像。
