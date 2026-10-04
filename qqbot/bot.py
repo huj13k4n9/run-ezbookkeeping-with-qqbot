@@ -68,6 +68,14 @@ def _short(value: str, keep: int = 20) -> str:
     return text if len(text) <= keep else f"{text[:keep]}…"
 
 
+#: 保护 ``Event.next_reply_seq`` 的计数器。用模块级锁而不是实例属性：
+#: Event 是 dataclass，实例属性要走 ``__post_init__``，而这里只需要一把锁。
+_REPLY_SEQ_GUARD = threading.Lock()
+
+#: 被动回复上限：官方规定同一条消息最多回 4 次，且 msg_seq 不能重复。
+MAX_PASSIVE_REPLIES = 4
+
+
 #: 输出清洗：万一 agent 把内部信息写进回复，这里再拦一道
 _LEAK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/\-]{8,}=*"), "Bearer ***"),
@@ -121,6 +129,28 @@ class Event:
     def msg_id(self) -> str:
         """用于被动回复的消息 ID（事件的 d.id）。"""
         return str(self.data.get("id") or self.id or "")
+
+    def next_reply_seq(self, start: int = 1, limit: int = 4) -> Optional[int]:
+        """分配这条消息主动回复用的下一个 ``msg_seq``。
+
+        被动回复必须带 ``msg_id``，**同一条消息最多回 4 次，且每次 ``msg_seq``
+        不能重复**，否则命中 ``40054005``（消息被去重）—— 表现是「第二条回复
+        神秘消失」。同一个事件可能被回两次（先「在处理」、后回结果），所以 seq
+        必须由我们按事件分配，不能留给平台默认值。
+
+        超过 ``limit`` 返回 None（并记日志）：继续发只会撞去重，
+        调用方应改用主动消息（不传 ``msg_id``）。
+        """
+        with _REPLY_SEQ_GUARD:
+            used = getattr(self, "_reply_seq", None) or start
+            if used >= start + limit:
+                log.warning(
+                    "被动回复已达上限（%d 次），本条不再回复: msg_id=%s",
+                    limit, _short(self.msg_id),
+                )
+                return None
+            self._reply_seq = used + 1
+        return used
 
     # ---------------------------------------------------------------- 消息类型
     @property
@@ -652,13 +682,34 @@ class QQBot:
         prompt: str,
         images: list[str],
     ) -> None:
+        # 长任务先给个回执：用户看到「记 200 笔」这种批量时，沉默几分钟会以为
+        # 消息没发出去，于是重发 —— 重发又会撞用户的并发锁，体验更差。
+        # 只回一句，不做持续播报（被动回复同一条消息最多 4 次）。
+        interim: Optional[threading.Timer] = None
+        delay = float(getattr(self.config, "agent_interim_after", 0) or 0)
+        if delay > 0:
+            interim = threading.Timer(delay, self._send_interim, args=(event,))
+            interim.name = "qqbot-interim-reply"
+            interim.daemon = True
+            interim.start()
+
         try:
             result = self.agent.run(prompt, session_id=session_id, images=images)
             self.on_agent_result(event, result)
         except Exception:  # noqa: BLE001 - 后台线程不能裸死
             log.exception("agent 任务异常")
         finally:
+            # 跑得快就不用发那句提示了（Timer 只负责「还没跑完」这一种情况）
+            if interim is not None:
+                interim.cancel()
             lock.release()
+
+    def _send_interim(self, event: Event) -> None:
+        """agent 跑太久时先回一句「在处理」。可覆写成自定义行为。"""
+        try:
+            self.safe_reply(event, self.config.agent_interim_text)
+        except Exception:  # noqa: BLE001 - 回执失败不能影响真正的结果
+            log.exception("发送处理中回执失败")
 
     def on_agent_result(self, event: Event, result: AgentResult) -> None:
         """把 agent 结果回给用户。可覆写成自定义行为。"""
@@ -718,6 +769,9 @@ class QQBot:
 
         被动回复必须带 msg_id，且同一 msg_id 下 msg_seq 不能重复，
         否则会命中 40054005（消息被去重）。
+
+        ``msg_seq`` 不传时**按事件自动分配**（见 ``Event.next_reply_seq``）——
+        否则「先回一句在处理、再回结果」的第二条会被平台去重掉。
         """
         channel = kwargs.pop("channel", None)
 
@@ -730,6 +784,17 @@ class QQBot:
                 "MESSAGE_CREATE": "channel",
                 "DIRECT_MESSAGE_CREATE": "channel",
             }.get(event.name)
+
+        if channel in ("c2c", "group") and msg_seq is None and event.msg_id:
+            msg_seq = event.next_reply_seq(
+                start=self.config.default_msg_seq, limit=MAX_PASSIVE_REPLIES
+            )
+            if msg_seq is None:
+                # 被动回复额度用尽：改用主动消息（不带 msg_id），
+                # 否则这条会静默撞 40054005。
+                if channel == "c2c":
+                    return self.api.send_c2c_message(event.user_openid, content=content, **kwargs)
+                return self.api.send_group_message(event.group_openid, content=content, **kwargs)
 
         if channel == "c2c":
             return self.api.send_c2c_message(
