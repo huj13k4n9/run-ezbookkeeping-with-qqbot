@@ -6,6 +6,10 @@ tmp_docs/
 venv/
 data/
 
+# 用户档案：账户名、口语别名、默认偏好 —— 属于个人数据，不入库。
+# 缺失时 agent 按 AGENTS.md 的通用规则跑（见 agent/AGENTS.md 开头）。
+agent/USER.md
+
 # pi 的配置目录：只保留模板，其余是运行时生成的
 config/*
 !config/*.example
