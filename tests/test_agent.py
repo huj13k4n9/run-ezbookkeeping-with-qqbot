@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -61,6 +62,9 @@ def make_config(tmp: Path, **overrides) -> BotConfig:
         ref_index_path=str(tmp / "ref-index.jsonl"),
         auto_download_dir=str(tmp / "media"),
         agent_cwd=str(tmp / "ws"),
+        # 回执用真实计时器，测试里默认关掉（只在专测它的用例里显式打开），
+        # 否则改了 agent_timeout 的用例会撞「回执阈值必须小于超时」的校验。
+        agent_interim_after=0.0,
     )
     params.update(overrides)
     ws = tmp / "ws"
@@ -273,6 +277,11 @@ def test_ebktools_path_and_validate(tmp: Path) -> None:
     prompt2, _ = build_prompt(msg_event("x"), cfg2)
     expected = (Path.cwd() / ".agents/skills/ezbookkeeping/scripts/ebktools.sh").resolve()
     check("相对路径按 bot cwd 解析", f"[工具] {expected}" in prompt2, prompt2)
+
+    # 只有一个工具入口（复刻增强版 ebktools），prompt 里不该再出现第二个路径行
+    prompt_single, _ = build_prompt(msg_event("x"), make_config(tmp, ebktools_path=str(tools)))
+    check("只注入一个 [工具] 行", prompt_single.count("[工具]") == 1, prompt_single)
+    check("prompt 里没有已废弃的 [增强工具] 行", "[增强工具]" not in prompt_single, prompt_single)
 
     # validate：cwd 与 ebktools 都就绪时无问题
     runner = AgentRunner(make_config(tmp, ebktools_path=str(tools)))
@@ -501,7 +510,18 @@ def test_build_argv(tmp: Path) -> None:
     check("以命令开头", argv[0] == cfg.agent_command, argv[0])
     check("含 --print", "--print" in argv)
     check("含 --session-id", argv[argv.index("--session-id") + 1] == "qq-abc-20260923")
-    check("含 --tools", argv[argv.index("--tools") + 1] == "bash,read")
+    # 白名单里有写文件能力（复杂记账要落临时脚本）；具体取值跟默认值走，
+    # 免得以后调默认值时这条断言变噪音。落盘位置由 AGENTS.md 约束在 /tmp。
+    check(
+        "含 --tools",
+        argv[argv.index("--tools") + 1] == BotConfig.__dataclass_fields__["agent_tools"].default,
+        argv[argv.index("--tools") + 1],
+    )
+    check(
+        "工具集含 write/edit",
+        {"write", "edit"} <= set(argv[argv.index("--tools") + 1].split(",")),
+        argv[argv.index("--tools") + 1],
+    )
     check("含 --model", argv[argv.index("--model") + 1] == "multimodal:high")
     check("含额外参数", "--thinking" in argv and "high" in argv)
     check("-- 在 @文件 之前", argv.index("--") < argv.index("@/a.jpg"), repr(argv))
@@ -670,6 +690,130 @@ def test_dispatch(tmp: Path) -> None:
     bot6.stop()
 
 
+def test_reply_seq(tmp: Path) -> None:
+    """被动回复的 msg_seq 必须每次不同，否则第二条被平台去重（40054005）。"""
+    print("\n[用例8b] 被动回复 msg_seq 分配")
+
+    class FakeAPI:
+        def __init__(self):
+            self.calls = []
+
+        def send_c2c_message(self, user_openid, **kw):
+            self.calls.append(("c2c", user_openid, kw))
+            return {"ok": True}
+
+        def send_group_message(self, group_openid, **kw):
+            self.calls.append(("group", group_openid, kw))
+            return {"ok": True}
+
+    bot = QQBot(make_config(tmp))
+    api = FakeAPI()
+    bot.api = api  # type: ignore[assignment]
+
+    # --- Event 层面的分配：1..4，第 5 次拒绝 ---
+    ev = msg_event("记 30 午饭", msg_id="MSG-SEQ")
+    start = bot.config.default_msg_seq
+    seqs = [ev.next_reply_seq(start=start) for _ in range(5)]
+    check("前 4 次拿到不同 seq", seqs[:4] == [1, 2, 3, 4], repr(seqs))
+    check("第 5 次被拒绝（额度用尽）", seqs[4] is None, repr(seqs))
+
+    # --- bot.reply：同一事件回两次必须带不同 msg_seq ---
+    ev2 = msg_event("记 30 午饭", msg_id="MSG-TWO")
+    bot.reply(ev2, "收到，正在处理")
+    bot.reply(ev2, "已记 3 笔")
+    seq_args = [c[2].get("msg_seq") for c in api.calls]
+    check("两次回复都带 msg_seq", all(s is not None for s in seq_args), repr(seq_args))
+    check("两次回复 msg_seq 不同", seq_args[0] != seq_args[1], repr(seq_args))
+    check("两次都带同一个 msg_id", all(c[2].get("msg_id") == "MSG-TWO" for c in api.calls))
+
+    # --- 不同事件各自从 1 开始（互不影响） ---
+    api.calls.clear()
+    bot.reply(msg_event("a", msg_id="M-A"), "一")
+    bot.reply(msg_event("b", msg_id="M-B"), "二")
+    check(
+        "不同事件各自从 1 开始",
+        [c[2].get("msg_seq") for c in api.calls] == [1, 1],
+        repr([c[2].get("msg_seq") for c in api.calls]),
+    )
+
+    # --- 额度用尽后退化为主动消息（不带 msg_id） ---
+    api.calls.clear()
+    ev3 = msg_event("记账", msg_id="MSG-CAP")
+    for i in range(6):
+        bot.reply(ev3, f"第{i}条")
+    last = api.calls[-1][2]
+    check("超限后不再带 msg_id（改主动推送）", "msg_id" not in last, repr(last))
+    check("超限后内容仍然发出去", last.get("content") == "第5条", repr(last))
+    bot.stop()
+
+
+def test_agent_long_run(tmp: Path) -> None:
+    """长任务：先回一句「在处理」，再回结果；跑得快就不发那句。"""
+    print("\n[用例8c] 长任务回执（interim reply）")
+
+    def drain(replies, want, timeout=3.0):
+        deadline = time.time() + timeout
+        while len(replies) < want and time.time() < deadline:
+            time.sleep(0.02)
+        return list(replies)
+
+    # --- 跑得快：不发回执（阈值给足，避免慢 CI 上抖动） ---
+    done_fast = threading.Event()
+    stub_fast = StubRunner(AgentResult(ok=True, text="记好了：30 元"), done_fast)
+    bot_fast, replies_fast = make_bot(tmp, stub_fast, agent_interim_after=30.0)
+    try:
+        bot_fast.dispatch_to_agent(msg_event("记 30 午饭", msg_id="MSG-FAST"))
+        check("等待快速任务", done_fast.wait(5))
+        drain(replies_fast, 1)
+        check("跑得快不发「在处理」", len(replies_fast) == 1, repr(replies_fast))
+        check("直接回结果", "记好了" in replies_fast[0][1], repr(replies_fast))
+    finally:
+        bot_fast.stop()
+
+    # --- 跑得慢：先回执、再回结果 ---
+    class SlowRunner:
+        def __init__(self, delay: float, result: AgentResult):
+            self.delay = delay
+            self.result = result
+            self.done = threading.Event()
+
+        def run(self, prompt, *, session_id="", images=None):
+            time.sleep(self.delay)
+            self.done.set()
+            return self.result
+
+    slow = SlowRunner(0.6, AgentResult(ok=True, text="已记 9 笔，共 128.85 元"))
+    bot_slow, replies_slow = make_bot(tmp, slow, agent_interim_after=0.15)
+    try:
+        ev = msg_event("导入这批账单", msg_id="MSG-SLOW")
+        bot_slow.dispatch_to_agent(ev)
+        check("等待慢任务回执", len(drain(replies_slow, 1)) >= 1)
+        check("回执文案来自配置", "正在处理" in replies_slow[0][1], repr(replies_slow))
+        check("等待慢任务完成", slow.done.wait(5))
+        drain(replies_slow, 2)
+        check("回执之后还有真正的结果", len(replies_slow) == 2, repr(replies_slow))
+        check("第二条是结果", "已记 9 笔" in replies_slow[1][1], repr(replies_slow))
+        # 注：这里 bot.reply 被 make_bot 换成了记录用的 stub，所以 msg_seq 计数器
+        # 不会被消耗 —— seq 的去重/递增由 [用例8b] 覆盖。
+    finally:
+        bot_slow.stop()
+
+    # --- 配置默认值：直接看数据类，别拿被测试辅助函数改过的配置来验 ---
+    defaults = BotConfig(app_id="1", client_secret="s")
+    check("agent 超时默认放宽到 1800s", defaults.agent_timeout == 1800.0, defaults.agent_timeout)
+    check("回执阈值默认 90s", defaults.agent_interim_after == 90.0, defaults.agent_interim_after)
+
+    # 阈值 >= 超时上限 = 回执永远发不出来，属于静默失效，必须直接报错
+    try:
+        BotConfig(app_id="1", client_secret="s", agent_timeout=60.0, agent_interim_after=90.0)
+        check("回执阈值 >= 超时上限时报错", False, "没有报错")
+    except Exception as exc:  # noqa: BLE001
+        check("回执阈值 >= 超时上限时报错", "interim" in str(exc), str(exc))
+    # 显式关掉回执（0）应当放行
+    off = BotConfig(app_id="1", client_secret="s", agent_timeout=60.0, agent_interim_after=0.0)
+    check("回执设为 0 表示关闭", off.agent_interim_after == 0.0)
+
+
 def test_concurrent_same_user(tmp: Path) -> None:
     print("\n[用例9] 同一用户并发保护")
     release = threading.Event()
@@ -709,6 +853,83 @@ def test_concurrent_same_user(tmp: Path) -> None:
     bot.stop()
 
 
+def test_batch_import_spec(tmp: Path) -> None:
+    print("\n[用例11] 批量导入约束（账单列表一次记完，不许一笔一笔等「继续」）")
+
+    spec_path = Path(__file__).resolve().parent.parent / "agent" / "AGENTS.md"
+    check("agent/AGENTS.md 存在", spec_path.is_file(), str(spec_path))
+    if not spec_path.is_file():
+        return
+    spec = spec_path.read_text(encoding="utf-8")
+
+    # 曾经的原文：「一条用户消息最多写一笔账」—— 就是它让模型记一笔就停下来等「继续」
+    check("已删掉「最多写一笔账」的旧约束", "最多写一笔账" not in spec)
+    check("有「批量记账」一节", "### 批量记账" in spec)
+    check("明确要求一次全部写完", "一次全部写完" in spec or "一次记完" in spec)
+    check("禁止中途停下来问先记哪一笔", "中途不要停" in spec and "先记哪一笔" in spec)
+    # 接口本身一笔一次，所以必须讲清楚「一条命令一笔」≠「一条消息一笔」
+    check("讲清一条命令一笔不是一条消息一笔", "一条命令写一笔" in spec)
+    check("禁止「已记第 N 笔，回复继续」", "回复「继续」" in spec or "回复『继续』" in spec)
+    # 「继续」只在超大账单时才允许，不能退化成逐笔确认。
+    # 具体阈值（30 / 100 笔）是调参，别在这里写死 —— 只要还留着这条闸门即可。
+    check(
+        "「继续」只留给超大账单",
+        re.search(r"\d+ 笔以上", spec) is not None and "唯一允许" in spec,
+    )
+    check("历史账单允许补记", "补记历史账单是允许的" in spec)
+    # 账单自带的日期必须用，不能拿今天顶替（截图里 9 月 20-21 日被记成当天就是这个问题）
+    check("批量每笔用自己的时间", "每笔的 `--time` 用账单上那一笔自己的时间" in spec)
+    # 确认阈值只针对单笔，不能因为一笔大额把整个批次卡住
+    check("确认阈值只针对单笔", "确认阈值只针对**单笔**金额" in spec)
+    check("批量回复要汇总不要贴明细", "不要把每一笔都列出来" in spec)
+    # 账单截图是多笔的主路径
+    check("图片一节点名账单列表", "账单列表（多笔）" in spec)
+
+    # 批量 = 一次运行里十几次 transactions-add，超时给小了会在记到一半时被 kill
+    check("agent 默认超时够跑批量（≥300s）", make_config(tmp).agent_timeout >= 300,
+          str(make_config(tmp).agent_timeout))
+
+
+def test_dedup_spec(tmp: Path) -> None:
+    print("\n[用例12] 自动去重约束（时间+金额一致就跳过，不重复入账）")
+
+    spec_path = Path(__file__).resolve().parent.parent / "agent" / "AGENTS.md"
+    spec = spec_path.read_text(encoding="utf-8")
+
+    check("有「自动去重」一节", "### 自动去重" in spec)
+    check("写明了写入之前查", "写入之前查" in spec)
+    check("要求跳过重复", "跳过这一笔" in spec)
+
+    # 判重口径：四个字段，时间逐位相等 + 金额按分
+    check("判重含 time", "`time`" in spec and "unix 秒，逐位相等" in spec)
+    check("判重含 sourceAmount", "`sourceAmount`" in spec)
+    check("判重含 sourceAccountId", "`sourceAccountId`" in spec)
+    check("判重含 type", "`type`" in spec)
+    # 用元做浮点比较会漏判（4.20 元在浮点里不是精确值），必须比「分」
+    check("按分比较而不是元", "不要用元做浮点比较" in spec)
+    check("给出分/元换算示例", "420" in spec and "4463" in spec)
+
+    # 反例也要写清楚，否则会「宁少记不多记」地误跳过真实的两笔
+    check("同额不同时间算两笔", "不要合并、不要少记" in spec)
+
+    # 时间筛选参数**只能**是 list-all 的 start_time/end_time：
+    # transactions-list 的 --min_time/--max_time 是游标 timeSequenceId，
+    # 传 unix 秒会静默返回空表 —— 那会让去重把「已记过」误判成「没记过」，
+    # 于是重复入账（实测：传 unix 秒返回 "No data to display"）
+    check("指定用 list-all 的 --start_time/--end_time", "--start_time" in spec and "--end_time" in spec)
+    check("点名 min_time/max_time 是游标陷阱", "timeSequenceId" in spec
+          and "`--min_time` / `--max_time`" in spec)
+    check("说明误用会静默返回空表", "只返回空表" in spec)
+    check("明确禁止用 min_time 做去重", "别用它们做去重" in spec)
+
+    # 回复要报跳过数，且全重复时不许硬记一笔凑数
+    check("回复要报跳过笔数", "跳过" in spec and "笔重复" in spec)
+    check("全重复时不许硬记", "不要为了让回复好看而硬记一笔" in spec)
+    check("去重不算失败", "跳过重复不是失败" in spec)
+    # 图片重发是主场景
+    check("图片重发要跳过", "再发一次" in spec)
+
+
 def main() -> int:
     print("=" * 62)
     print("  agent 层自测")
@@ -726,7 +947,11 @@ def main() -> int:
         test_runner_run(tmp)
         test_sanitize_reply()
         test_dispatch(tmp)
+        test_reply_seq(tmp)
+        test_agent_long_run(tmp)
         test_concurrent_same_user(tmp)
+        test_batch_import_spec(tmp)
+        test_dedup_spec(tmp)
 
     failed = [c for c in CHECKS if not c[1]]
     print("\n" + "=" * 62)

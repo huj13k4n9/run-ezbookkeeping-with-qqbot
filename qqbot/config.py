@@ -193,12 +193,29 @@ class BotConfig:
     #: 支持绝对路径；相对路径按 **bot 的 cwd** 解析。
     #: QQ bot 代码与 agent 目录通常不在一起，部署时建议直接写绝对路径。
     agent_cwd: str = "agent"
-    #: ebktools.sh 路径（会写进 prompt 的 [工具] 行）；相对路径同样按 bot 的 cwd 解析
+    #: ebktools 脚本路径（会写进 prompt 的 [工具] 行）；相对路径按 bot 的 cwd 解析。
+    #: 这是**复刻增强版**（.agents/skills/ezbookkeeping/scripts/ebktools.sh）：
+    #: 覆盖官方 12 条命令，另加 query / modify / stats 三条本项目需要的命令，
+    #: 所以不再需要第二个「增强工具」路径。
     ebktools_path: str = ".agents/skills/ezbookkeeping/scripts/ebktools.sh"
-    #: 工具白名单
-    agent_tools: str = "bash,read"
-    #: 单次 agent 超时（秒）
-    agent_timeout: float = 120.0
+    #: 工具白名单（逗号分隔，名字须与 pi 内置工具完全一致：全小写）
+    #: 放开 write/edit 是为了复杂记账：落一个临时脚本比把几十行管道挤进一条
+    #: bash -c 好调、可复用。**落盘位置由 AGENTS.md 约束在 /tmp** ——
+    #: 容器里 agent/ 与 .agents/ 是只读挂载，往那边写一定失败。
+    #: pi 没有目录级权限控制，--tools 就是唯一的粒度，收紧只能靠 prompt 纪律。
+    agent_tools: str = "bash,read,write,edit,grep,find,ls"
+    #: 单次 agent 超时（秒）。
+    #: 批量导入一张账单截图 = 一次运行里十几次 transactions-add，
+    #: 120s 会在记到一半时被 kill（表现为「只记了几笔就没了」），所以放宽。
+    #: 600s 对上百笔的批量仍然不够（超时 = pi 被杀、stdout 为空 = 用户只看到
+    #: 「处理超时了」，等于没回复），默认再放宽到 1800s。
+    agent_timeout: float = 1800.0
+    #: agent 跑超过这么多秒就先回一句「在处理」，避免用户以为消息没发出去。
+    #: 0 = 关闭这句提示。注意被动回复同一条消息最多 4 次（见 MAX_PASSIVE_REPLIES），
+    #: 所以这里只回**一句**，不做持续播报。
+    agent_interim_after: float = 90.0
+    #: 上面那句提示的文案
+    agent_interim_text: str = "收到，正在处理，稍等一下～"
     #: 注：模型名与端点（含密钥）在 pi 的 <agent-dir>/models.json 里，
     #: 路径由 PI_CODING_AGENT_DIR 决定，不在这里配（单一来源）。
     #: 全局并发上限（同时跑几个 agent）
@@ -233,6 +250,15 @@ class BotConfig:
             )
         if self.agent_max_concurrency < 1:
             raise QQBotConfigError("agent_max_concurrency 至少为 1")
+        if self.agent_interim_after < 0:
+            raise QQBotConfigError("agent_interim_after 不能为负")
+        if 0 < self.agent_interim_after >= self.agent_timeout:
+            # 回执本意是「还没跑完」，阈值 >= 超时上限就永远不会发出来 —— 静默失效
+            raise QQBotConfigError(
+                f"agent_interim_after（{self.agent_interim_after}s）必须小于 "
+                f"agent_timeout（{self.agent_timeout}s），否则回执永远不会发出；"
+                "不需要回执就设为 0"
+            )
         if self.reply_max_chars < 1:
             raise QQBotConfigError("reply_max_chars 至少为 1")
 
@@ -286,8 +312,11 @@ class BotConfig:
             agent_cwd=_env("QQ_BOT_AGENT_CWD") or "agent",
             ebktools_path=_env("QQ_BOT_EBKTOOLS_PATH")
             or ".agents/skills/ezbookkeeping/scripts/ebktools.sh",
-            agent_tools=_env("QQ_BOT_AGENT_TOOLS") or "bash,read",
-            agent_timeout=float(_env_int("QQ_BOT_AGENT_TIMEOUT", default=120)),
+            agent_tools=_env("QQ_BOT_AGENT_TOOLS") or "bash,read,write,edit,grep,find,ls",
+            agent_timeout=float(_env_int("QQ_BOT_AGENT_TIMEOUT", default=1800)),
+            agent_interim_after=float(_env_int("QQ_BOT_AGENT_INTERIM_AFTER", default=90)),
+            agent_interim_text=_env("QQ_BOT_AGENT_INTERIM_TEXT")
+            or "收到，正在处理，稍等一下～",
             agent_max_concurrency=_env_int("QQ_BOT_AGENT_MAX_CONCURRENCY", default=2),
             agent_extra_args=tuple(
                 part for part in (_env("QQ_BOT_AGENT_EXTRA_ARGS") or "").split() if part
